@@ -1,0 +1,72 @@
+model:
+    pretrained_model_name_or_path: 'meta-llama/Llama-3.2-3B-Instruct'
+    pretrained_tokenizer_name_or_path: 'meta-llama/Llama-3.2-3B-Instruct'
+    load_in_4bit: false
+    load_in_8bit: false
+    bnb_4bit_compute_dtype: null
+    bnb_4bit_quant_type: "nf4"
+    bnb_4bit_use_double_quant: false
+    bnb_4bit_quant_storage: "uint8"
+    torch_dtype: float16
+    attn_implementation: null
+    device_map: null
+    low_cpu_mem_usage: null
+    lora_adapter: # path to lora adapter
+
+prompt:
+    use_only_input_text: false
+    use_examples: false
+    use_context: false
+    # intro_text: "Bạn là chuyên gia toán học." 
+    intro_text: "You are a math expert." 
+    instruction_key: "### Instruction:"
+    # instruction_text: "Giải bài toán sau. Lời giải của bạn nên chứa 2 phần: Explanation và Answer. Phần Explanation trình bày cách thực hiện lời giải. Phần Answer chỉ chứa số như câu trả lời và không chứa bất kỳ kí tự nào khác."
+    # Định dạng đầu ra của bạn nên như sau:\nExplanation:\n<explanation>\nAnswer:\n<answer>" #"You are a knowledgeable assistant for the company CMC Global. Your task is to providing accurate and helpful answers to the user's questions about the company."
+    instruction_text: "Solve the following problem. Your solution should contain 2 parts: Explanation and Answer. The Explanation section shows how to perform the solution. The Answer section only contains numbers as the answer and does not contain any other characters."
+    examples_key: "### Examples:"
+    examples_template: |
+        - Example {index}
+          Problem:
+          {problem}
+        
+          Solution:
+          Explanation:
+          {explanation}
+          Answer:
+          {answer}
+    examples_list:
+        - index: 1
+          problem: "Weng kiếm được $12 một giờ khi trông trẻ. Hôm qua, cô ấy chỉ trông được 50 phút. Cô ấy kiếm được bao nhiêu tiền?"
+          explanation: "Weng kiếm được 12/60 = $0.2 mỗi phút.\nLàm việc trong 50 phút, cô ấy kiếm được 0.2 x 50 = $10."
+          answer: "10"
+
+    # - index: 1
+    #   problem: "Weng kiếm được $12 một giờ khi trông trẻ. Hôm qua, cô ấy chỉ trông được 50 phút. Cô ấy kiếm được bao nhiêu tiền?"
+    #   explanation: "Weng kiếm được 12/60 = $0.2 mỗi phút.\nLàm việc trong 50 phút, cô ấy kiếm được 0.2 x 50 = $10."
+    #   answer: "10"
+
+    input_key: "### Problem:"
+    input_text: "James decides to run 3 sprints 3 times a week.  He runs 60 meters each sprint.  How many total meters does he run a week?"
+    # Vịt của Janet đẻ được 16 quả trứng mỗi ngày. Cô ấy ăn 3 quả vào bữa sáng và nướng bánh muffin cho bạn bè mỗi ngày với 4 quả. Cô ấy bán số trứng còn lại tại chợ nông sản hàng ngày với giá $2 mỗi quả trứng vịt tươi. Cô ấy kiếm được bao nhiêu đô la mỗi ngày tại chợ nông sản?
+    context_key:
+    context_text: 
+    response_key: "### Solution: Let's think step by step.\n"
+    end_key: null
+
+generate:
+  seed: 202502
+  use_vllm: False
+  do_postprocess: false
+  return_full: false
+  skip_special_tokens: true
+  max_new_tokens: 512
+  temperature:
+  do_sample: null
+  top_p: null
+  # num_beams: 4,    
+  # num_return_sequences: 4,
+  # return_dict_in_generate: True,
+  # output_scores: True,
+  
+device:
+  use_cpu: false

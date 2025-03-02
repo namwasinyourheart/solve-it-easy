@@ -1,0 +1,129 @@
+exp_manager:
+  prj_name: llm_math_problem_solve
+  exp_name: "llama-3.2-3b-instruct__gsm8k_vi"
+  seed: 202502
+  task_name: 'math_reasoning'
+  dataset_name: 'samsum'
+  model_name: 'meta-llama/Llama-3.2-3B-Instruct'
+  phase_name: 'eval'
+  print_cfg: true
+
+prepare_data:
+  dataset:
+    is_prepared: false # Check if dataset is ready or not
+    data_path: namfam/gsm8k-vietnamese
+    is_dataset_dict: true
+    id_col: 'index'
+    input_col: "problem"
+    output_col: "solution"
+    context_col: 
+    do_split: true
+    subset_ratio: 1
+    val_ratio: 0.25
+    test_ratio: 0.2
+    columns_to_retain: ['index', 'answer', 'text',]
+    do_save: true
+    do_show: false
+    prepared_data_path: ./exps/llama-3.2-3b-instruct__gsm8k_vi/data/llama-3.2-3b-instruct__gsm8k_vi.pkl
+  
+  prompt:
+    use_model_chat_template: false
+    use_only_input_text: false
+    use_examples: false
+    use_context: false
+
+    intro_text: "You are a math expert." 
+    # intro_text: "Bạn là chuyên gia toán học."
+    instruction_key: "### Instruction:"
+    # instruction_text: "Giải bài toán sau. Lời giải của bạn nên chứa 2 phần: Explanation và Answer. Phần Explanation trình bày cách thực hiện lời giải. Phần Answer chỉ chứa số như câu trả lời và không chứa bất kỳ kí tự nào khác."
+    instruction_text: "Solve the following problem. Your solution should contain 2 parts: Explanation and Answer. The Explanation section shows how to perform the solution. The Answer section only contains numbers as the answer and does not contain any other characters."
+    examples_key:
+    examples_template: 
+    examples_list: 
+    
+    context_key: null
+    input_key: "### Problem:"
+    # response_key: "### Solution:"
+    response_key: "### Solution: Let's think step by step.\n"
+    end_key: null
+  
+  tokenizer:
+    new_pad_token: null
+    do_tokenize: true
+    truncation: true
+    padding: max_length
+    padding_side: 'left'
+    add_special_tokens: false
+    max_length: 512
+
+prepare_model: 
+  pretrained_model_name_or_path: 'meta-llama/Llama-3.2-3B-Instruct'
+  pretrained_tokenizer_name_or_path:
+  load_in_4bit: false
+  load_in_8bit: false
+  bnb_4bit_compute_dtype: null
+  bnb_4bit_quant_type: "nf4"
+  bnb_4bit_use_double_quant: false
+  bnb_4bit_quant_storage: "uint8"
+  torch_dtype: float16
+  attn_implementation: null
+  device_map: null
+  low_cpu_mem_usage: null
+  lora_adapter: # path to lora adapter
+
+train:
+    use_peft: True
+    lora:
+      r: 64
+      lora_alpha: 32
+      lora_dropout: 0.0
+      bias: none
+      task_type: CAUSAL_LM
+      inference_mode: false
+      target_modules: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+      modules_to_save:
+
+    do_merge: true
+    train_n_samples: 100
+    val_n_samples: 10
+    test_n_samples: 10
+    
+    train_args:
+      _target_: transformers.TrainingArguments
+      resume_from_checkpoint: 
+      do_train: false
+      do_eval: true
+      do_predict: false
+      learning_rate: 0.0001
+      num_train_epochs: 1
+      # max_steps: 1
+      per_device_train_batch_size: 2
+      per_device_eval_batch_size: 2
+      # logging_strategy: "no"
+      logging_steps: 1
+      logging_first_step: true
+      save_strategy: epoch
+      eval_strategy: steps
+      eval_steps: 50
+      eval_accumulation_steps: 1
+      eval_on_start: true
+      use_cpu: false
+      report_to: None
+
+generate:
+  max_new_tokens: 512
+  pad_token_id: null
+  skip_special_tokens: True
+  temperature:
+  do_sample:
+
+
+eval:
+  batch_size: 36
+  break_step: 1
+  do_extract_prediction: True
+  prediction_file: 'test_predictions_0shot.txt'
+  result_file: 'test_result_0shot.txt'
+
+device:
+    use_cpu: False
