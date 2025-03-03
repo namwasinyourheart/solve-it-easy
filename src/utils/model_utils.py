@@ -76,12 +76,16 @@ def get_model_class(pretrained_model_name_or_path):
 
 def load_model(model_args, device_args) -> PreTrainedModel:
 
-    # Set torch_dtype and attn_implementation
-    torch_dtype, attn_implementation = set_torch_dtype_and_attn_implementation()
+    attn_implementation = model_args['attn_implementation']
+
+    if attn_implementation=='flash-attention-2':
+        # Set torch_dtype and attn_implementation
+        torch_dtype, attn_implementation = set_torch_dtype_and_attn_implementation()
 
     if model_args['torch_dtype']:
         torch_dtype = model_args['torch_dtype']
 
+    
     # QLora Config
     quantization_config = get_quantization_config(model_args)
 
@@ -132,12 +136,14 @@ def set_torch_dtype_and_attn_implementation():
 def get_quantization_config(model_args                          
 ) -> BitsAndBytesConfig | None:
     if model_args['load_in_4bit']:
-        torch_dtype, attn_implementation = set_torch_dtype_and_attn_implementation()
+        # torch_dtype, attn_implementation = set_torch_dtype_and_attn_implementation()
         
-        if model_args['bnb_4bit_compute_dtype']:
-            bnb_4bit_compute_dtype = model_args['bnb_4bit_compute_dtype']
-        else:
-            bnb_4bit_compute_dtype = torch_dtype
+        # if model_args['bnb_4bit_compute_dtype']:
+        #     bnb_4bit_compute_dtype = model_args['bnb_4bit_compute_dtype']
+        # else:
+        #     bnb_4bit_compute_dtype = torch_dtype
+
+        bnb_4bit_compute_dtype = model_args['bnb_4bit_compute_dtype']
 
         quantization_config = BitsAndBytesConfig(
             load_in_4bit=True,
