@@ -16,6 +16,7 @@ from transformers import (
 
 from transformers import BitsAndBytesConfig
 from src.utils.model_utils import set_torch_dtype_and_attn_implementation, get_quantization_config
+from src.utils.exp_utils import setup_environment
 
 
 
@@ -247,7 +248,11 @@ def main():
     # Load the generation config file
     cfg = OmegaConf.load(args.config_path)
 
-    # print(OmegaConf.to_yaml(cfg))
+    # Setup environment
+    setup_environment()
+
+
+    # print(OmegaConf.to_yaml(cfg   ))
 
     model_args = cfg.model
     prompt_args = cfg.prompt
