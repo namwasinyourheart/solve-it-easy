@@ -107,10 +107,15 @@ def main():
     # Create experiment directories
     # logger.info("CREATING DIRECTORIES...")""
     exp_name = cfg.exp_manager.exp_name
-    (exp_dir, exp_data_dir, exp_checkpoints_dir, exp_results_dir) = create_exp_dir(exp_name)
+    exps_dir = cfg.exp_manager.exps_dir
 
-    import shutil
-    shutil.copy(args.config_path, exp_dir)
+    (exp_dir, exp_data_dir, exp_checkpoints_dir, exp_results_dir) = create_exp_dir(exp_name, exps_dir)
+
+    # import shutil
+    # shutil.copy(args.config_path, exp_dir)
+
+    OmegaConf.save(cfg, os.path.join(exp_dir, exp_name)+'.yaml')
+
 
     exp_args = cfg.exp_manager
     train_args = cfg.train
