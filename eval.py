@@ -103,7 +103,8 @@ import re
 # Function to extract the final number from generated text
 def extract_prediction(text, min_value=np.iinfo(np.int32).min, max_value=np.iinfo(np.int32).max):
     try:
-        matches = re.findall(r'### Solution:\s+.*?Answer:\s*([\d,]+)', text, re.DOTALL)
+        # matches = re.findall(r'### Solution:\s+.*?Answer:\s*([\d,]+)', text, re.DOTALL)
+        matches = re.findall(r'### Solution:.*?Answer:\s*([\d,]+)', text, re.DOTALL)
         if matches:
             answer =  matches[0]
             answer = answer.replace(',', '')
@@ -145,12 +146,17 @@ def main():
     logger.info("LOADING CONFIGURATIONS...")
     cfg, exp_args, data_args, model_args, train_args, eval_args, gen_args, device_args = load_cfg(config_path=args.config_path, override_args=override_args)
     
-    logger.info("CREATING DIRECTORIES...")
+    # Create experiment directories
+    # logger.info("CREATING DIRECTORIES...")""
     exp_name = cfg.exp_manager.exp_name
-    (exp_dir, exp_data_dir, exp_checkpoints_dir, exp_results_dir) = create_exp_dir(exp_name)
+    exps_dir = cfg.exp_manager.exps_dir
 
-    import shutil
-    shutil.copy(args.config_path, exp_dir)
+    (exp_dir, exp_data_dir, exp_checkpoints_dir, exp_results_dir) = create_exp_dir(exp_name, exps_dir)
+
+    # import shutil
+    # shutil.copy(args.config_path, exp_dir)
+
+    OmegaConf.save(cfg, os.path.join(exp_dir, 'eval_' + exp_name) + '.yaml')
 
     # Set seed
     set_seed(exp_args.seed)
