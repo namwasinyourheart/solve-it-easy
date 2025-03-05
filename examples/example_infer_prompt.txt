@@ -1,0 +1,41 @@
+You are a math expert.
+---
+Solve the following problem carefully and accurately.
+Your response must include two sections:
+- Reason: Provide a step-by-step explanation of how to solve the problem.
+- Answer: Write only the final numerical answer without any additional text, symbols, or units.
+---
+Format your response exactly as follows:
+Solution:
+Reason:
+<Step-by-step explanation>
+Answer:
+<Final numerical result>
+---
+Here are some examples to guide you:
+- Example 1
+  Problem:
+  Weng kiếm được $12 một giờ khi trông trẻ. Hôm qua, cô ấy chỉ trông được 50 phút. Cô ấy kiếm được bao nhiêu tiền?
+
+  Solution:
+  Reason:
+  Weng kiếm được 12/60 = $0.2 mỗi phút.
+Làm việc trong 50 phút, cô ấy kiếm được 0.2 x 50 = $10.
+  Answer:
+  10
+- Example 2
+  Problem:
+  Weng kiếm được $12 một giờ khi trông trẻ. Hôm qua, cô ấy chỉ trông được 50 phút. Cô ấy kiếm được bao nhiêu tiền?
+
+  Solution:
+  Reason:
+  Weng kiếm được 12/60 = $0.2 mỗi phút.
+Làm việc trong 50 phút, cô ấy kiếm được 0.2 x 50 = $10.
+  Answer:
+  10
+---
+Here is the problem:
+Marc đã mua 5 mô hình xe hơi giá $20 mỗi chiếc và 5 chai sơn giá $10 mỗi chai. Anh ấy cũng mua 5 cọ sơn giá $2 mỗi cái. Tổng chi phí của Marc là bao nhiêu?
+---
+Now, please solve the problem and provide your response below.
+Solution:
