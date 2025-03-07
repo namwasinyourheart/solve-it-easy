@@ -1,7 +1,7 @@
 import os
 from dotenv import load_dotenv
 
-def create_exp_dir(exp_name, sub_dirs=['checkpoints', 'data', 'results']):
+def create_exp_dir(exp_name, exps_dir='exps', sub_dirs=['checkpoints', 'data', 'results']):
     """
     Create necessary directories for an experiment.
     
@@ -12,8 +12,10 @@ def create_exp_dir(exp_name, sub_dirs=['checkpoints', 'data', 'results']):
     Returns:
         Tuple containing paths to experiment directories.
     """
-    os.makedirs("exps", exist_ok=True)
-    exp_dir = os.path.join("exps", exp_name)
+    # os.makedirs("exps", exist_ok=True)
+    os.makedirs(exps_dir, exist_ok=True)
+    # exp_dir = os.path.join("exps", exp_name)
+    exp_dir = os.path.join(exps_dir, exp_name)
     os.makedirs(exp_dir, exist_ok=True)
     
     sub_dirs_paths = {sub_dir: os.path.join(exp_dir, sub_dir) for sub_dir in sub_dirs}
