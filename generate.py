@@ -2,9 +2,11 @@ from omegaconf import OmegaConf
 from typing import List, Tuple
 import importlib
 
+import torch
+
 from transformers import (
-    # AutoModelForCausalLM,
-    # AutoModelForSeq2SeqLM,
+    AutoModelForCausalLM,
+    AutoModelForSeq2SeqLM,
     AutoTokenizer,
     PreTrainedModel,
     PreTrainedTokenizer,
@@ -15,6 +17,8 @@ from transformers import (
 
 
 from transformers import BitsAndBytesConfig
+# from vllm import LLM, SamplingParams
+
 from src.utils.model_utils import set_torch_dtype_and_attn_implementation, get_quantization_config
 from src.utils.exp_utils import setup_environment
 
@@ -77,8 +81,11 @@ def get_quantization_config(model_args
 
 def load_model_for_generate(model_args, device_args) -> PreTrainedModel:
 
-    # Set torch_dtype and attn_implementation
-    torch_dtype, attn_implementation = set_torch_dtype_and_attn_implementation()
+    attn_implementation = model_args['attn_implementation']
+
+    if attn_implementation=='flash-attention-2':
+        # Set torch_dtype and attn_implementation
+        torch_dtype, attn_implementation = set_torch_dtype_and_attn_implementation()
 
     if model_args['torch_dtype']:
         torch_dtype = model_args['torch_dtype']
@@ -86,7 +93,16 @@ def load_model_for_generate(model_args, device_args) -> PreTrainedModel:
     # QLora Config
     quantization_config = get_quantization_config(model_args)
 
-    model_class = get_model_class(model_args['pretrained_model_name_or_path'])
+    # model_class = get_model_class(model_args['pretrained_model_name_or_path'])
+
+    if model_args.model_type == 'causal_lm':
+        model_class = AutoModelForCausalLM
+
+    elif model_args.model_type == 'seq_2_seq_lm':
+        model_class = AutoModelForSeq2SeqLM
+    
+    else:
+        model_class = get_model_class(model_args['pretrained_model_name_or_path'])
 
     # Load model
     model = model_class.from_pretrained(
@@ -98,29 +114,55 @@ def load_model_for_generate(model_args, device_args) -> PreTrainedModel:
             attn_implementation=attn_implementation,
             low_cpu_mem_usage=model_args['low_cpu_mem_usage']  # low_cpu_mem_usage=True if not device_args['use_cpu'] else False
     )
-    
+
+
+    # # print(model)
+    # adapter_path = '/exps/llama-3.2-1b-instruct__gsm8k_vien/checkpoints/checkpoint-1124'
+    # from peft import PeftModel
+    # finetuned_model = PeftModel.from_pretrained(model, adapter_path)
+    # finetuned_model = finetuned_model.merge_and_unload()
+
+    # # print(finetuned_model)
+
+    # from src.utils.model_utils import print_trainable_parameters
+    # print_trainable_parameters(finetuned_model)
+
+
+    # model.save_pretrained("/exps/tmp/toy_ft_model")
+    # finetuned_model = model
     return model
 
-def load_model_vllm(model_args, device_args):
-    from vllm import LLM
+def load_model_for_generate_vllm(model_args, gen_args, device_args):    
+    # # Set torch_dtype and attn_implementation
+    # torch_dtype, attn_implementation = set_torch_dtype_and_attn_implementation()
+    torch_dtype = model_args['torch_dtype']
+
+    # init model torch dtype
+    if torch_dtype == "" or torch_dtype == "bfloat16":
+        torch_dtype = torch.bfloat16
+    elif torch_dtype == "float32":
+        torch_dtype = torch.float32
+    elif torch_dtype == "float16":
+        torch_dtype = torch.float16
+    else:
+        raise ValueError(f"Invalid torch dtype: {torch_dtype}")
     
-    # Set torch_dtype and attn_implementation
-    torch_dtype, attn_implementation = set_torch_dtype_and_attn_implementation()
-
     # Load model
-    llm = LLM(
+    model = LLM(
         model=model_args['pretrained_model_name_or_path'],
-        dtype=torch_dtype
-        )
+        dtype=torch_dtype,
+        max_tokens = gen_args['max_length ']
 
-    return llm
+    )
+
+    return model
 
 
 def load_tokenizer_for_generate(
     model_args
 ) -> PreTrainedTokenizer:
     
-    tokenizer = AutoTokenizer.from_pretrained(model_args['pretrained_tokenizer_name_or_path'])
+    tokenizer = AutoTokenizer.from_pretrained(model_args['pretrained_model_name_or_path'])
     tokenizer.padding_side = 'left'
     tokenizer.pad_token = tokenizer.eos_token
         
@@ -196,7 +238,26 @@ def postprocess(prompt: str, tokenizer, output: str, response_key: str, end_key:
     return decoded
 
 
+def generate_response_vllm(model_args, prompt_args, gen_args, device_args):
+    model = load_model_for_generate_vllm(model_args, gen_args, device_args)
+    prompt = prepare_prompt(prompt_args)
+
+    gen_params = {
+        "top_p": gen_args['top_p'],
+        "top_k": gen_args['top_k'],
+        "temperature": gen_args['temperature']
+    }
+
+    sampling_params = SamplingParams(**gen_params)
+
+    outputs = model.generate(prompts=prompt, sampling_params=sampling_params)[0]
+    generated_text = outputs.outputs[0].text
+    
+    return generated_text
+
+
 def generate_response(model_args, prompt_args, gen_args, device_args):
+
 
     from accelerate import Accelerator
     accelerator = Accelerator(cpu=device_args.use_cpu)
@@ -208,7 +269,15 @@ def generate_response(model_args, prompt_args, gen_args, device_args):
     prompt = prepare_prompt(prompt_args)
 
     # input = tokenizer(prompt, return_tensors='pt', padding=False, truncation=True)
-    input = tokenizer(prompt, return_tensors='pt', padding='max_length', max_length=512, truncation=True, padding_side='left', add_special_tokens=True)
+    input = tokenizer(prompt, 
+                      return_tensors='pt', 
+                    #   padding='max_length', 
+                      max_length=512, 
+                      truncation=True, 
+                      padding_side='left', 
+                      add_special_tokens=True)
+    
+    # print(input)
     input_ids = input.input_ids
     attention_mask = input.attention_mask
 
@@ -252,7 +321,7 @@ def main():
     setup_environment()
 
 
-    # print(OmegaConf.to_yaml(cfg   ))
+    # print(OmegaConf.to_yaml(cfg))
 
     model_args = cfg.model
     prompt_args = cfg.prompt
@@ -266,7 +335,11 @@ def main():
     if args.input_text:
         prompt_args['input_text'] = args.input_text
 
-    response = generate_response(model_args, prompt_args, gen_args, device_args)
+    if gen_args.use_vllm:
+        response = generate_response_vllm(model_args, prompt_args, gen_args, device_args)
+
+    else:
+        response = generate_response(model_args, prompt_args, gen_args, device_args)
     print(response)
 
 if __name__ == "__main__":
