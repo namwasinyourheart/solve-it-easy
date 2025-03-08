@@ -1,6 +1,8 @@
-from transformers.integrations import WandbCallback
 import numpy as np
 import pandas as pd
+import wandb
+
+from transformers.integrations import WandbCallback
 
 
 def decode_predictions(tokenizer, predictions):
@@ -8,66 +10,59 @@ def decode_predictions(tokenizer, predictions):
     label_ids = np.where(label_ids != -100, label_ids, tokenizer.pad_token_id)
     labels = tokenizer.batch_decode(label_ids, skip_special_tokens=True, clean_up_tokenization_spaces=True)
     
-    predictions =  predictions.predictions
-    # print("predictions:", predictions)
-    predictions = np.where(predictions != -100, predictions, tokenizer.pad_token_id)
-    logits = predictions.argmax(axis=-1)
-    prediction_text = tokenizer.batch_decode(logits, skip_special_tokens=True, clean_up_tokenization_spaces=True)
+    pred_ids =  predictions.predictions
+    pred_ids = np.where(pred_ids != -100, pred_ids, tokenizer.pad_token_id)
+    pred_ids = pred_ids.argmax(axis=-1)
+    predictions = tokenizer.batch_decode(pred_ids, skip_special_tokens=True, clean_up_tokenization_spaces=True)
     
-    return {"labels": labels, "predictions": prediction_text}
+    return {"prediction": predictions, "label": labels}
 
-class WandbPredictionProgressCallback(WandbCallback):
+
+
+class ProgressCallback(WandbCallback):
     """Custom WandbCallback to log model predictions during training.
 
-    This callback logs model predictions and labels to a wandb.Table at each 
-    logging step during training. It allows to visualize the 
-    model predictions as the training progresses.
-
-    Attributes:
-        trainer (Trainer): The Hugging Face Trainer instance.
-        tokenizer (AutoTokenizer): The tokenizer associated with the model.
-        sample_dataset (Dataset): A subset of the validation dataset 
-          for generating predictions.
-        num_samples (int, optional): Number of samples to select from 
-          the validation dataset for generating predictions. Defaults to 100.
-        freq (int, optional): Frequency of logging. Defaults to 2.
+    Logs model predictions at defined intervals during training, allowing 
+    visualization of model progress over time.
     """
 
-    def __init__(self, trainer, tokenizer, val_dataset,
-                 num_samples=100, freq=2):
-        """Initializes the WandbPredictionProgressCallback instance.
+    def __init__(self, trainer, tokenizer, dataset, 
+                 n_samples=100, logging_strategy='step', 
+                 interval_epoch=1, interval_step=100):
+        """
+        Initializes ProgressCallback.
 
         Args:
-            trainer (Trainer): The Hugging Face Trainer instance.
-            tokenizer (AutoTokenizer): The tokenizer associated 
-              with the model.
-            val_dataset (Dataset): The validation dataset.
-            num_samples (int, optional): Number of samples to select from 
-              the validation dataset for generating predictions.
-              Defaults to 100.
-            freq (int, optional): Frequency of logging. Defaults to 2.
+            trainer (Trainer): Hugging Face Trainer instance.
+            tokenizer (AutoTokenizer): Tokenizer for decoding predictions.
+            val_dataset (Dataset): Validation dataset.
+            n_samples (int, optional): Number of samples for predictions. Defaults to 100.
+            logging_strategy (str, optional): 'step' or 'epoch' for logging frequency. Defaults to 'step'.
+            interval_epoch (int, optional): Log predictions every N epochs. Defaults to 1.
+            interval_step (int, optional): Log predictions every N steps. Defaults to 100.
         """
         super().__init__()
         self.trainer = trainer
         self.tokenizer = tokenizer
-        self.sample_dataset = val_dataset.select(range(num_samples))
-        self.freq = freq
+        self.dataset = dataset.select(range(n_samples))
+        self.logging_strategy = logging_strategy
+        self.interval_epoch = interval_epoch
+        self.interval_step = interval_step
+
+    def log_predictions(self, predictions, key):
+        """Logs model predictions to wandb."""
+        predictions_df = pd.DataFrame(decode_predictions(self.tokenizer, predictions))
+        predictions_df[key] = getattr(self.trainer.state, key, None)
+        wandb.log({"progress_predictions": wandb.Table(dataframe=predictions_df)})
 
     def on_evaluate(self, args, state, control, **kwargs):
+        """Logs predictions at specified evaluation intervals."""
         super().on_evaluate(args, state, control, **kwargs)
-        # control the frequency of logging by logging the predictions
-        # every `freq` epochs
-        # print(" state.epoch:",  state.epoch)
-        if state.epoch % self.freq == 0:
-            # print("Logging Callback...")
-            # generate predictions
-            predictions = self.trainer.predict(self.sample_dataset)
-            # decode predictions and labels
-            predictions = decode_predictions(self.tokenizer, predictions)
-            # add predictions to a wandb.Table
-            predictions_df = pd.DataFrame(predictions)
-            predictions_df["epoch"] = state.epoch
-            # print("predictions_df:", predictions_df)
-            records_table = self._wandb.Table(dataframe=predictions_df)
-            # log the table to wandb
-            self._wandb.log({"sample_predictions": records_table})
+
+        if self.logging_strategy == 'epoch' and state.epoch % self.interval_epoch == 0:
+            self.log_predictions(self.trainer.predict(self.dataset), key="epoch")
+
+        elif self.logging_strategy == 'step' and state.global_step % self.interval_step == 0:
+            self.log_predictions(self.trainer.predict(self.dataset), key="global_step")
+
+
