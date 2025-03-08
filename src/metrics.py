@@ -39,25 +39,24 @@ def calc_accuracy(predictions: List[str], references: List[str]):
     return accuracy_score
 
 
-def extract_prediction(text, min_value=np.iinfo(np.int32).min, max_value=np.iinfo(np.int32).max, return_error: str="-123"):
-    # try:
-    matches = re.findall(r'### Solution:\s+.*?Answer:\s*([\d,]+)', text, re.DOTALL)
-    if matches:
-        answer =  matches[0]
-        answer = answer.replace(',', '')
+def extract_prediction(response, min_value=np.iinfo(np.int32).min, max_value=np.iinfo(np.int32).max, return_error: str="-123"):
+    try:
+        matches = re.findall(r'Solution:.*?Reason:.*Answer:.*?([\d,]+)', response, re.DOTALL)
+        if matches:
+            answer =  matches[0]
+            answer = answer.replace(',', '')
 
-        if min_value <= int(float(answer)) <= max_value: 
-            # print('answer:', answer)
-            return answer
-        
+            if min_value <= int(float(answer)) <= max_value: 
+                # print('answer:', answer)
+                return answer
+            
+            else:
+                return return_error
         else:
-            return return_error
-        # answer = int(answer)    
-    else:
-        answer = return_error
-    return answer
-    # except Exception:
-        # return "-1"
+            answer = return_error
+        return answer
+    except Exception:
+        return return_error
 
 from nltk.translate.bleu_score import sentence_bleu
 def calc_nltk_bleu(predictions, references):
