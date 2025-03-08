@@ -1,3 +1,6 @@
+import sys
+sys.path.append('E:\projects\SolveItEasy')
+
 import os
 import shutil
 import joblib
@@ -8,18 +11,21 @@ import warnings
 
 import pandas as pd
 from datasets import load_dataset, Dataset, DatasetDict
-from src.utils.model_utils import load_tokenizer
 
 from hydra import initialize, compose
 from omegaconf import OmegaConf
 
 from transformers import set_seed
-from src.utils.model_utils import load_tokenizer
+from src.utils.model_utils1 import load_tokenizer
 
-from src.utils.log_utils import setup_logger
 from src.utils.exp_utils import setup_environment, create_exp_dir
 
+from src.utils.hieralog import hprint, fprint, pprint, progress_write
+# from hieralog import hprint, fprint, pprint, progress_write
+
 warnings.filterwarnings("ignore")
+
+
 
 def load_cfg(config_path, override_args=None):
 
@@ -51,52 +57,340 @@ def load_cfg(config_path, override_args=None):
     
     # assert os.path.basename(config_path).replace('.yaml', '') == cfg.exp_manager.exp_name, \
     # assert cfg.exp_manager.phase_name + '__' + 
-    assert cfg.exp_manager.exp_name == os.path.basename(config_path).replace('.yaml', ''), \
+    # assert cfg.exp_manager.exp_name == os.path.basename(config_path).replace('.yaml', ''), \
     f"Config file name '{os.path.basename(config_path)}' does not match experiment name '{cfg.exp_manager.exp_name}' in the config."
 
     if cfg.exp_manager.print_cfg:
-        print(OmegaConf.to_yaml(cfg))
+        hprint("2: Showing configuration...")
+        fprint(OmegaConf.to_yaml(cfg))
     
     exp_args = cfg.exp_manager
-    data_args = cfg.prepare_data
-    model_args = cfg.prepare_model
+    data_args = cfg.data
+    tokenizer_args = cfg.tokenizer
+    prompt_args = cfg.prompt
+    model_args = cfg.model
     train_args = cfg.train
-    eval_args = cfg.eval
+    eval_args = cfg.evaluate
     device_args = cfg.device
     gen_args = cfg.generate
 
-    return cfg, exp_args, data_args, model_args, train_args, eval_args, gen_args
+    return cfg, exp_args, data_args, tokenizer_args, prompt_args, model_args, train_args, eval_args, gen_args, device_args
 
-def create_dataset_dict(data_path, 
-                        do_split: bool=True, 
-                        val_ratio: float=0.25,
-                        test_ratio: float=0.2,
-                        seed: int = 42):
+# def load_cfg(file_path: str) -> dict:
+#     """Loads user data from a YAML file using OmegaConf."""
+#     cfg = OmegaConf.load(file_path)
+#     return cfg
 
+
+def save_cfg(cfg, config_path):
+    """
+    Save the configuration to a YAML file.
+
+    Args:
+        cfg (OmegaConf): The configuration object to save.
+        config_path (str): The path where the configuration file will be saved.
+
+    Returns:
+        None
+    """
+    OmegaConf.save(cfg, config_path)
+    pprint(f"Configuration saved to {config_path}")
+
+
+def has_system_role_support(tokenizer):
+    messages = [
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Who won the FIFA World Cup 2022?"},
+        {"role": "assistant", "content": "Argentina won the FIFA World Cup 2022, defeating France in the final."}
+    ]
+    try:
+        tokenizer.apply_chat_template(messages, tokenize=False)
+        return True
+    except:
+        return False
+
+def format_examples(user_input: dict) -> str:
+    """Formats the examples section if examples_list is provided, using examples_template."""
+    examples_key = user_input.get("examples_key", "")
+    examples_template = user_input.get("examples_template", "")
+    examples_list = user_input.get("examples_list", [])
+
+    if examples_key and examples_list:
+        formatted = "\n".join(
+            examples_template.format(
+                index=ex.get("index", ""),
+                problem=ex.get("problem", ""),
+                reason=ex.get("reason", ""),
+                answer=ex.get("answer", "")
+            ).strip()
+            for ex in examples_list if "problem" in ex and "answer" in ex
+        )
+        return f"{examples_key}\n{formatted}" if formatted else ""
+    return ""
+
+
+def generate_prompt_wrapper(tokenizer):
+
+    def generate_prompt(sample, data_args, prompt_args, exp_args) -> str:
+        """
+        Generates a structured prompt based on the provided dictionary.
+        Sections are included only if their corresponding key/text is present and allowed by flags.
+        """
+
+        # Ensure phase is only "train" or "eval"
+        if exp_args.phase not in ["train", "eval"]:
+            raise ValueError(f"Invalid phase: {exp_args.phase}. Allowed values are 'train' or 'eval'.")
+
+        use_only_input_text = prompt_args.get("use_only_input_text", False)
+        use_examples = prompt_args.get("use_examples", False)
+        use_context = prompt_args.get("use_context", False)
+        use_response_format_guide = prompt_args.get("use_response_format_guide", False)
+
+        input_col = data_args.get("input_col", "problem")
+        output_col = data_args.get("output_col", "solution")
+        context_col = data_args.get("context_col", "context")
+
+        if not prompt_args.get("end_key"):
+            prompt_args["end_key"] = tokenizer.eos_token
+
+        if use_only_input_text:
+            prompt = sample[input_col]
+            if exp_args.phase in ["train", "eval"]:
+                prompt += prompt_args.get("sep", "\n\n") + sample[output_col]
+        else:
+            prompt_parts = {}
+
+            def get_section(key, text_key=None):
+                parts = []
+                val = prompt_args.get(key)
+                if val:
+                    parts.append(val)
+                if text_key:
+                    val = prompt_args.get(text_key)
+                    if val:
+                        parts.append(val)
+                return "\n".join(parts).strip() or None
+
+            prompt_parts["intro"] = get_section("intro_key", "intro_text")
+            prompt_parts["instruction"] = get_section("instruction_key", "instruction_text")
+            prompt_parts["response_format_guide"] = get_section("response_format_guide_key", "response_format_guide_text") if use_response_format_guide else None
+            prompt_parts["examples"] = format_examples(prompt_args) if use_examples else None
+            prompt_parts["context"] = get_section("context_key", "context_text") if use_context else None
+
+            # Build input section
+            input_parts = []
+            if prompt_args.get("input_key"):
+                input_parts.append(prompt_args.get("input_key"))
+            if exp_args.phase in ["train", "eval"]:
+                input_parts.append(sample.get(input_col, ""))
+            else:
+                input_parts.append(prompt_args.get("input_text", ""))
+            prompt_parts["input"] = "\n".join(filter(None, input_parts)).strip() or None
+
+            prompt_parts["pre_response"] = prompt_args.get("pre_response_text")
+
+            # Build response section
+            response_parts = []
+            if prompt_args.get("response_key"):
+                response_parts.append(prompt_args.get("response_key"))
+            if exp_args.phase == "train":
+                response_parts.append(sample.get(output_col, ""))
+            prompt_parts["response"] = "\n".join(filter(None, response_parts)).strip() or None
+
+            if not prompt_args.get("use_model_chat_template"):
+                combined = [v for v in prompt_parts.values() if v]
+                prompt = prompt_args.get("sep", "\n\n").join(combined)
+            else:
+                # Use chat template if supported
+                if has_system_role_support(tokenizer):
+                    system_content = "\n\n".join(filter(None, [
+                        prompt_parts.get("intro"),
+                        prompt_parts.get("instruction"),
+                        prompt_parts.get("response_format_guide"),
+                        prompt_parts.get("examples")
+                    ]))
+                    user_content = "\n\n".join(filter(None, [
+                        prompt_parts.get("context"),
+                        prompt_parts.get("input"),
+                        prompt_args.get("pre_response_text", "")
+                    ]))
+                    messages = [{"role": "system", "content": system_content},
+                                {"role": "user", "content": user_content}]
+                    if exp_args.phase == "train":
+                        messages.append({"role": "assistant", "content": prompt_parts.get("response") or ""})
+                        prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+                    else:
+                        prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+                        prompt += prompt_parts.get("response") or ""
+                else:
+                    # Ensure context is included with input
+                    user_message_content = "\n\n".join(filter(None, [
+                        prompt_parts.get("intro"),
+                        prompt_parts.get("instruction"),
+                        prompt_parts.get("response_format_guide"),
+                        prompt_parts.get("examples"),
+                        prompt_parts.get("context"),
+                        prompt_parts.get("input"),
+                        prompt_args.get("pre_response_text", "")
+                    ]))
+
+                    messages = [{"role": "user", "content": user_message_content}]
+                    
+                    if exp_args.phase == "train":
+                        messages.append({"role": "assistant", "content": prompt_parts.get("response") or ""})
+                        prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+                    else:
+                        prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+
+        if exp_args.phase == "train":
+            prompt += prompt_args["end_key"]
+
+        sample["text"] = prompt
+        return sample
     
-    df = pd.read_csv(data_path)
-    hf_dataset = Dataset.from_pandas(df)
-
-  
-    if do_split:
-        # Splitting the dataset
-        train_test_split = hf_dataset.train_test_split(test_size=test_ratio, seed=seed)
-        train_val_split = train_test_split["train"].train_test_split(test_size=val_ratio, seed=seed)  # 0.25 x 0.8 = 0.2
     
-        # Create DatasetDict
-        dataset_dict = DatasetDict({
-            "train": train_val_split["train"],
-            "val": train_val_split["test"],
-            "test": train_test_split["test"]
-        })
+    return generate_prompt
+
+
+
+# def generate_prompt_wrapper(tokenizer):
+
+#     def generate_prompt(sample, data_args, prompt_args, exp_args) -> str:
+#         """
+#         Generates a structured prompt based on the provided dictionary.
+#         Sections are included only if their corresponding key/text is present and allowed by flags.
+#         """
+#         use_only_input_text = prompt_args.get("use_only_input_text", False)
+#         use_examples = prompt_args.get("use_examples", False)
+#         use_context = prompt_args.get("use_context", False)
+#         use_response_format_guide = prompt_args.get("use_response_format_guide", False)
+
+#         input_col = data_args.get("input_col", "problem")
+#         output_col = data_args.get("output_col", "solution")
+#         context_col = data_args.get("context_col", "context")
+
+#         if not prompt_args.get("end_key"):
+#             prompt_args["end_key"] = tokenizer.eos_token
+
+#         if use_only_input_text:
+#             prompt = sample[input_col]
+#             if exp_args.phase == "train":
+#                 prompt += prompt_args.get("sep", "\n\n") + sample[output_col]
+#         else:
+#             prompt_parts = {}
+
+#             def get_section(key, text_key=None):
+#                 parts = []
+#                 val = prompt_args.get(key)
+#                 if val:
+#                     parts.append(val)
+#                 if text_key:
+#                     val = prompt_args.get(text_key)
+#                     if val:
+#                         parts.append(val)
+#                 return "\n".join(parts).strip() or None
+
+#             prompt_parts["intro"] = get_section("intro_key", "intro_text")
+#             prompt_parts["instruction"] = get_section("instruction_key", "instruction_text")
+#             prompt_parts["response_format_guide"] = get_section("response_format_guide_key", "response_format_guide_text") if use_response_format_guide else None
+#             prompt_parts["examples"] = format_examples(prompt_args) if use_examples else None
+#             prompt_parts["context"] = get_section("context_key", "context_text") if use_context else None
+
+#             # Build input section
+#             input_parts = []
+#             if prompt_args.get("input_key"):
+#                 input_parts.append(prompt_args.get("input_key"))
+#             if exp_args.phase == "train":
+#                 input_parts.append(sample.get(input_col, ""))
+#             else:
+#                 input_parts.append(prompt_args.get("input_text", ""))
+#             prompt_parts["input"] = "\n".join(filter(None, input_parts)).strip() or None
+
+#             prompt_parts["pre_response"] = prompt_args.get("pre_response_text")
+
+#             # Build response section
+#             response_parts = []
+#             if prompt_args.get("response_key"):
+#                 response_parts.append(prompt_args.get("response_key"))
+#             if exp_args.phase == "train":
+#                 response_parts.append(sample.get(output_col, ""))
+#             prompt_parts["response"] = "\n".join(filter(None, response_parts)).strip() or None
+
+#             if not prompt_args.get("use_model_chat_template"):
+#                 combined = [v for v in prompt_parts.values() if v]
+#                 prompt = prompt_args.get("sep", "\n\n").join(combined)
+#             else:
+#                 # Use chat template if supported
+#                 if has_system_role_support(tokenizer):
+#                     system_content = "\n\n".join(filter(None, [
+#                         prompt_parts.get("intro"),
+#                         prompt_parts.get("instruction"),
+#                         prompt_parts.get("response_format_guide"),
+#                         prompt_parts.get("examples")
+#                     ]))
+#                     user_content = "\n\n".join(filter(None, [
+#                         prompt_parts.get("context"),
+#                         prompt_parts.get("input"),
+#                         prompt_args.get("pre_response_text", "")
+#                     ]))
+#                     messages = [{"role": "system", "content": system_content},
+#                                 {"role": "user", "content": user_content}]
+#                     if exp_args.phase == "train":
+#                         messages.append({"role": "assistant", "content": prompt_parts.get("response") or ""})
+#                         prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+#                     else:
+#                         prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+#                         prompt += prompt_parts.get("response") or ""
+#                 else:
+#                     # Ensure context is included with input
+#                     user_message_content = "\n\n".join(filter(None, [
+#                         prompt_parts.get("intro"),
+#                         prompt_parts.get("instruction"),
+#                         prompt_parts.get("response_format_guide"),
+#                         prompt_parts.get("examples"),
+#                         prompt_parts.get("context"),
+#                         prompt_parts.get("input"),
+#                         prompt_args.get("pre_response_text", "")
+#                     ]))
+
+#                     messages = [{"role": "user", "content": user_message_content}]
+                    
+#                     if exp_args.phase == "train":
+#                         messages.append({"role": "assistant", "content": prompt_parts.get("response") or ""})
+#                         prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+#                     else:
+#                         prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+
+#         if exp_args.phase == "train":
+#             prompt += prompt_args["end_key"]
+
+#             sample["text"] = prompt
+#             return sample
         
-    else:
-        dataset_dict = DatasetDict({
-            "train": hf_dataset
-        })
-    return dataset_dict
+#         else:
+#             return prompt
+    
+#     return generate_prompt
 
 
+def do_tokenize_wrapper(tokenizer):
+    def do_tokenize(sample, tokenizer_args):
+        """
+        Tokenizes the text in the example and updates the example dictionary with input_ids and attention_mask.
+        """
+        text = sample.get("text", None)  # Get text safely
+
+        if not isinstance(text, str):  
+            raise ValueError(f"Expected `text` to be a string, but got {type(text)}: {text}")
+
+        tokenized_text = tokenizer(text, **tokenizer_args)  # Pass tokenizer_args correctly
+        sample["input_ids"] = tokenized_text["input_ids"]
+        sample["attention_mask"] = tokenized_text["attention_mask"]
+        return sample
+    
+    return do_tokenize
+
+# @capture_output
 def show_dataset_examples(dataset_dict):
     """
     Prints the length, columns, shape of columns, and an example from each split of a DatasetDict (train, val, test).
@@ -110,324 +404,139 @@ def show_dataset_examples(dataset_dict):
     -------
     None
     """
+    
     for split_name, dataset in dataset_dict.items():
+        hprint(f"3: Split: {split_name}")
+
         # Get the length and columns of the current split
+        hprint("4: Showing length, columns...")
         dataset_length = len(dataset)
         dataset_columns = dataset.column_names
 
-        print(f"\nSplit: {split_name}")
-        print(f"Number of Examples: {dataset_length}")
-        print(f"Columns: {dataset_columns}")
+        pprint(f"Number of Examples: {dataset_length}")
+        pprint(f"Columns: {dataset_columns}")
 
         # Calculate the shape of each column
-        print("Shapes:")
+        hprint("4: Calculating shapes...")
+        hprint("5: Shapes:")
         for column_name in dataset_columns:
             if column_name in dataset[0]:
                 col_data = dataset[column_name]
                 if isinstance(col_data[0], list):  # Multi-dimensional data (e.g., tokenized inputs)
-                    print(f"  {column_name}: [{len(col_data)}, {len(col_data[0])}]")
+                    pprint(f"  {column_name}: [{len(col_data)}, {len(col_data[0])}]")
                 else:  # Single-dimensional data (e.g., strings)
-                    print(f"  {column_name}: [{len(col_data)}]")
+                    pprint(f"  {column_name}: [{len(col_data)}]")
 
         # Get the first example from the current split
         example = dataset[0]
 
-        print("An example:")
+        hprint("4: Showing an example...")
+        hprint("5: An example:")
         for key, value in example.items():
-            print(f"  {key}: \n{value}")
-
-    print("-" * 24 + "\n")
+            pprint(f"  {key}: \n{value}")
 
 
-def has_system_role_support(tokenizer):
-    messages = [
-            {
-                "role": "system",
-                "content": "You are a helpful assistant."
-            },
-            {
-                "role": "user",
-                "content": "Who won the FIFA World Cup 2022?"
-            },
-            {
-                "role": "assistant",
-                "content": "Argentina won the FIFA World Cup 2022, defeating France in the final."
-            }
-    ]
+def prepare_data(exp_args, data_args, tokenizer_args, prompt_args, model_args):
+    """
+    Prepare the data for training and evaluation.
 
-    try: 
-        tokenizer.apply_chat_template(messages, tokenize=False)
-        return True
-    except:
-        return False
+    Args:
+        exp_args (dict): Experiment arguments.
+        data_args (dict): Data arguments.
+        tokenizer_args (dict): Tokenizer arguments.
+        prompt_args (dict): Prompt arguments.
+        model_args (dict): Model arguments.
 
+    Returns:
+        DatasetDict: A DatasetDict containing the prepared train, val, and test splits.
+    """
+    # Load the tokenizer
+    hprint("2: Loading tokenizer...")
+    tokenizer = load_tokenizer(tokenizer_args, model_args, prompt_args)
 
+    # Load the dataset
+    hprint("2: Loading dataset...")
+    dataset = load_dataset(data_args.dataset_name_or_path)
 
-def create_prompt_formats(example,
-                          tokenizer,
-                          use_model_chat_template: bool=False,
-                          input_col: str="question",
-                          output_col: str="answer",
-                          context_col: str="context",
-
-                          use_only_input_text: str=False,
-                          use_examples: str=False,
-                          use_context: str=False,
-                          
-                          intro_text: str="You are a knowledgeable assistant for the company CMC Global.",
-                          instruction_key: str="### Instruction:",
-                          instruction_text: str="Your task is to providing accurate and helpful answers to the user's questions about the company.",
-
-                          examples_key: str="### Examples:",
-                          examples_template: str="",
-                          examples_list: list=[],
-                          
-                          context_key: str="### Context:",
-                          input_key: str = "### Question:",
-                          response_key: str = "### Answer:",
-                          end_key = None,
-                          
-                          do_tokenize = False, 
-                          max_length = None, 
-                          phase_name='eval'
-):
-    if not end_key:
-        end_key = tokenizer.eos_token
-    end = f'{end_key}'
+    if data_args.subset_ratio and 0< data_args.subset_ratio < 1:
+            dataset = DatasetDict({
+                split: dataset[split].shuffle(seed=exp_args.seed).select(range(int(data_args.subset_ratio * len(dataset[split]))))
+                for split in dataset.keys()
+    })
     
-    if use_only_input_text:
-        input = f'{example[input_col]}'
+    columns_to_remove = [col for col in dataset['train'].column_names if col not in data_args.columns_to_retain]
 
-        if phase_name == 'train':
-            response = f'{example[output_col]}'
-        
-        elif phase_name == 'eval':
-            response = None
+    # Generate prompts
+    hprint("2: Generating prompts...")
+    generate_prompt = generate_prompt_wrapper(tokenizer)
+    _generate_prompt = partial(generate_prompt, data_args=data_args, prompt_args=prompt_args, exp_args=exp_args)
+    dataset = dataset.map(_generate_prompt, remove_columns=columns_to_remove)
 
-        parts = [part for part in [input, response] if part]
-        formatted_prompt = "\n\n".join(parts)
+    if data_args.do_tokenize:
+        # Tokenize the data
+        hprint("2: Tokenizing the data...")
+        do_tokenize = do_tokenize_wrapper(tokenizer)
+        _do_tokenize = partial(do_tokenize, tokenizer_args=tokenizer_args.tokenizer_args)
+        dataset = dataset.map(_do_tokenize)
 
-    else:
-        intro = f'{intro_text}'
+    if data_args.save_prepared:
+        # Save the prepared data
+        hprint("2: Saving prepared data...")
+        joblib.dump(dataset, data_args.prepared_data_path)
+        pprint(f"Prepared data saved to: {data_args.prepared_data_path}")
 
-        instruction = f'{instruction_key}\n{instruction_text}'
+    if data_args.do_show:
+        hprint("2: Showing dataset examples...")
+        # Show dataset examples
+        show_dataset_examples(dataset)
 
-        if not use_examples:
-            examples = None
-        else:
-            example_template = examples_template
-            formatted_examples = "\n".join(
-                example_template.format(**example) for example in examples_list
-            )
-            examples = f"{examples_key}\n{formatted_examples}"
+    return dataset
 
-        if not use_context:
-            context = None
-        else:
-            context = f"{context_key}\n{example['context_col']}"
-    
-        input = f'{input_key}\n{example[input_col]}'
-    
-        if phase_name == 'train':
-            response = f'{response_key}\n{example[output_col]}'
-        
-        elif phase_name == 'eval':
-            response = f'{response_key}'
-        
-        if not use_model_chat_template:  # Not using default model chat template
-            parts = [part.strip() for part in [intro, instruction, examples, context, input, response] if part and len(part.strip())]
-            formatted_prompt = "\n\n".join(parts)
-        
-        else:   # Using defaut model chat template
-            if has_system_role_support(tokenizer):
-    
-                if context_col:
-                    input = f'{context}\n{input}'
-                messages = [
-                    {"role": "system", "content": instruction},
-                    {"role": "user", "content": input},
-                    {"role": "assistant", "content": response},   
-                ]
-                formatted_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
-    
-            else:
-                if context_col:
-                    input = f'{context}\n{input}'
-                messages = [
-                    {"role": "user", "content": instruction + '\n' + input},
-                    {"role": "assistant", "content": response},
-                ]
-                formatted_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
 
-    
-    if phase_name == 'train':
-        if formatted_prompt.strip().endswith(end):
-            example['text'] = formatted_prompt
-            # print('endswith end')
-        else:
-            # print('does not ends with end')
-            example['text'] = formatted_prompt + end
-    
-    elif phase_name == 'eval':
-        example['text'] = formatted_prompt + '\n'
-        
+def parse_args():
+    import argparse
+    parser = argparse.ArgumentParser(description="Load generation config.")
+    parser.add_argument("--config_path", type=str, required=True, help="Path to the YAML config file for generating.")
 
-    if do_tokenize:
-        tokenized_text = tokenizer(formatted_prompt, 
-                                   truncation=True, 
-                                   padding='max_length', 
-                                   add_special_tokens=True, 
-                                   max_length=max_length,
-                                   # return_tensors='pt',
-                                   padding_side='left'
-                                   )
-
-        
-        example['input_ids'] = tokenized_text['input_ids']
-        example['attention_mask'] = tokenized_text['attention_mask']
-
-    return example
-        
-    
-def save_dataset(dataset, save_path):
-    joblib.dump(dataset, save_path)
-    
-def get_data_collator():
-    pass
-
-def prepare_data(exp_args, data_args, model_args):
-
-    if data_args.dataset.is_dataset_dict:
-        dataset_dict = load_dataset(data_args.dataset.data_path,
-                                    trust_remote_code=True)
-    
-    else:    
-        dataset_dict = create_dataset_dict(data_args.dataset.data_path, 
-                                           data_args.dataset.do_split, 
-                                           data_args.dataset.val_ratio, 
-                                           data_args.dataset.test_ratio, 
-                                           exp_args.seed)
-        
-
-    if data_args.dataset.subset_ratio and 0 < data_args.dataset.subset_ratio < 1:
-        
-        dataset_dict = DatasetDict({
-            split: dataset_dict[split].shuffle(seed=exp_args.seed).select(range(int(len(dataset_dict[split]) * data_args.dataset.subset_ratio)))
-            for split in dataset_dict.keys()
-        }) 
-    
-    tokenizer = load_tokenizer(data_args, model_args)
-
-    for key, value in data_args.prompt.items():
-        if not key.startswith('use') and key != 'end_key' and not value:
-            value = ''
-            data_args.prompt[key] = value
-
-    _create_prompt_formats = partial(
-        create_prompt_formats,
-          tokenizer = tokenizer,
-          use_model_chat_template = data_args.prompt.use_model_chat_template,
-          
-          input_col = data_args.dataset.input_col,
-          output_col = data_args.dataset.output_col,
-          context_col = data_args.dataset.context_col,
-
-          use_only_input_text = data_args.prompt.use_only_input_text,
-          use_examples = data_args.prompt.use_examples,
-          use_context = data_args.prompt.use_context,
-                          
-          
-          intro_text = data_args.prompt.intro_text, 
-          instruction_key = data_args.prompt.instruction_key, 
-          instruction_text = data_args.prompt.instruction_text,           
-          
-          examples_key = data_args.prompt.examples_key,
-          examples_template = data_args.prompt.examples_template,
-          examples_list = data_args.prompt.examples_list,
-
-          context_key =  data_args.prompt.context_key,
-          input_key = data_args.prompt.input_key, 
-          response_key = data_args.prompt.response_key, 
-          end_key = data_args.prompt.end_key,
-
-          do_tokenize = data_args.tokenizer.do_tokenize, 
-          max_length = data_args.tokenizer.max_length,
-          phase_name = exp_args.phase_name
-    )
-    
-    columns_to_retain = data_args.dataset.columns_to_retain
-    columns_to_remove = [col for col in dataset_dict['train'].column_names if col not in columns_to_retain]
-
-    dataset = dataset_dict.map(
-        _create_prompt_formats, 
-         batched=False, 
-         remove_columns=columns_to_remove
-    )
-
-    if data_args.dataset.do_save:
-        save_path = data_args.dataset.prepared_data_path
-        save_dataset(dataset, save_path)
-
-    return dataset, save_path
+    args, override_args = parser.parse_known_args()
+    return args, override_args
 
 
 def main():
-
-   # Setup logging
-    logger = setup_logger()
+    # # Setup logging
+    # logger = setup_logger()
 
     # Setup environment
-    logger.info("SETTING UP ENVIRONMENT...")
+    hprint("1: Setting up environment...")
     setup_environment()
-
-
+    
     # Parse arguments
-    parser = argparse.ArgumentParser(description='Load experiment configurations.')
-    parser.add_argument(
-        '--config_path',
-        type=str,
-        required=True,
-        help='Path to the configuration file for the experiment.'
-    )
-
-    args, override_args = parser.parse_known_args()
+    args, override_args = parse_args()
 
     # Load configuration
-    logger.info("LOADING CONFIGURATIONS...")
-    cfg, exp_args, data_args, model_args, train_args, eval_args, gen_args = load_cfg(config_path=args.config_path, override_args=override_args)
+    hprint("1: Loading configuration...")
+    cfg, exp_args, data_args, tokenizer_args, prompt_args, model_args, train_args, eval_args, gen_args, device_args = load_cfg(config_path=args.config_path, override_args=override_args)
     
     # Create experiment directories
-    logger.info("CREATING DIRECTORIES...")
     exp_name = cfg.exp_manager.exp_name
-    (exp_dir, exp_data_dir, exp_checkpoints_dir, exp_results_dir) = create_exp_dir(exp_name)
+    exps_dir = cfg.exp_manager.exps_dir
+    exp_dir, exp_data_dir, exp_checkpoints_dir, exp_results_dir = create_exp_dir(exp_name, exps_dir)
 
-    shutil.copy(args.config_path, exp_dir)
+    # Save configuration if have any changes from the overrides
+    config_path = os.path.join(exp_dir, exp_name + '.yaml')
+    save_cfg(cfg, config_path)
 
     # Set seed
     set_seed(exp_args.seed)
 
 
-    if data_args.dataset.is_prepared:
-        # Get the path to the processed data
-        processed_data_path = os.path.normpath(data_args.dataset.prepared_data_path)
-        
-        # Check if the processed data exists
-        if not os.path.isfile(processed_data_path):
-            raise FileNotFoundError(f"Processed data not found at: {processed_data_path}")
-        
-        # Load the dataset
-        logger.info("LOADING PROCESSED DATASET...")
-        dataset = joblib.load(processed_data_path)
+    if data_args.is_prepared:
+        hprint("1: Data is prepared, loading...")
+        prepare_data_path = data_args.prepared_data_path
+        dataset_dict = joblib.load(prepare_data_path)
     else:
-        # Prepare dataset
-        logger.info("PREPARING DATASET...")
+        hprint("1: Preparing data...")
+        dataset_dict = prepare_data(exp_args, data_args, tokenizer_args, prompt_args, model_args)
 
-        dataset, processed_data_path = prepare_data(exp_args, data_args, model_args)
-
-    if data_args.dataset.do_show:
-        # Show dataset examples
-        show_dataset_examples(dataset)
-
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
