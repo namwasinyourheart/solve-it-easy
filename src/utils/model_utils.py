@@ -4,6 +4,7 @@ import torch
 
 from transformers import (
     AutoModelForCausalLM, 
+    AutoModelForSeq2SeqLM,
     AutoTokenizer, 
     PreTrainedTokenizer, 
     PreTrainedModel, 
@@ -14,37 +15,36 @@ from transformers import (
      
 
 
-def load_tokenizer(data_args, model_args,
-                  # padding_side
-) -> PreTrainedTokenizer:
-    tokenizer =  AutoTokenizer.from_pretrained(model_args.pretrained_model_name_or_path)
+def load_tokenizer(tokenizer_args, model_args, prompt_args) -> PreTrainedTokenizer:
+    tokenizer = AutoTokenizer.from_pretrained(model_args.pretrained_model_name_or_path)
+    
     if not tokenizer.pad_token:
-        
-        if data_args.tokenizer.new_pad_token:
+        if tokenizer_args.new_pad_token:
             tokenizer.padding_side = 'left'
-            tokenizer.pad_token = data_args.tokenizer.new_pad_token,
-            tokenizer.add_special_tokens({"pad_token": data_args.tokenizer.new_pad_token})
+            tokenizer.pad_token = tokenizer_args.new_pad_token
+            tokenizer.add_special_tokens({"pad_token": tokenizer_args.new_pad_token})
         else:
             tokenizer.padding_side = 'left'
             tokenizer.pad_token = tokenizer.eos_token
     
-    if data_args.tokenizer.add_special_tokens:
+    if tokenizer_args.do_add_special_tokens:
         additional_special_tokens = [
-            data_args.prompt.instruction_key, 
-            data_args.prompt.input_key,  
-            data_args.prompt.response_key
+            prompt_args.instruction_key,
+            prompt_args.input_key,
+            prompt_args.response_key
         ]
         
-        if data_args.prompt.context_key:
-            additional_special_tokens = additional_special_tokens.append(data_args.prompt.context_key)
-            
+        if prompt_args.context_key:
+            additional_special_tokens.append(prompt_args.context_key)
+        
         tokenizer.add_special_tokens({
             "additional_special_tokens": additional_special_tokens
         })
-
+    
     tokenizer.padding_side = 'left'
-                
+    
     return tokenizer
+
 
 def get_model_class(pretrained_model_name_or_path):
     """
@@ -85,11 +85,19 @@ def load_model(model_args, device_args) -> PreTrainedModel:
     if model_args['torch_dtype']:
         torch_dtype = model_args['torch_dtype']
 
-    
     # QLora Config
     quantization_config = get_quantization_config(model_args)
 
-    model_class = get_model_class(model_args['pretrained_model_name_or_path'])
+    # model_class = get_model_class(model_args['pretrained_model_name_or_path'])
+
+    if model_args.model_type == 'causal_lm':
+        model_class = AutoModelForCausalLM
+
+    elif model_args.model_type == 'seq_2_seq_lm':
+        model_class = AutoModelForSeq2SeqLM
+    
+    else:
+        model_class = get_model_class(model_args['pretrained_model_name_or_path'])
 
     # Load model
     model = model_class.from_pretrained(
@@ -106,9 +114,9 @@ def load_model(model_args, device_args) -> PreTrainedModel:
 
 
 def get_model_tokenizer(
-    data_args, model_args, device_args
+    model_args, tokenizer_args, prompt_args, device_args, 
 ) -> Tuple[AutoModelForCausalLM, PreTrainedTokenizer]:
-    tokenizer = load_tokenizer(data_args, model_args)
+    tokenizer = load_tokenizer(tokenizer_args, model_args, prompt_args)
     model = load_model(model_args, device_args)
     model.resize_token_embeddings(len(tokenizer))
 
@@ -258,3 +266,4 @@ def get_checkpoint(training_args) -> Path | None:
     if os.path.isdir(training_args.output_dir):
         last_checkpoint = get_last_checkpoint(training_args.output_dir)
     return last_checkpoint
+
