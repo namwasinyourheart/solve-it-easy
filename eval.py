@@ -29,12 +29,19 @@ from torch.utils.data import DataLoader
 from src.utils.exp_utils import setup_environment, create_exp_dir
 from src.utils.log_utils import setup_logger
 
+from src.utils.hieralog import hprint, pprint, fprint
+
 from src.utils.model_utils import (
     set_torch_dtype_and_attn_implementation,
     get_quantization_config
 )
 
 from prepare_data import prepare_data, show_dataset_examples
+
+
+from generate import get_model_class, load_model_for_generate
+from src.utils.model_utils1 import load_tokenizer
+from src.utils.eval_utils import save_predictions, save_metrics
 
 def load_cfg(config_path, override_args=None):
 
@@ -64,27 +71,38 @@ def load_cfg(config_path, override_args=None):
     except Exception as e:
         raise RuntimeError(f"Failed to load configuration from {config_path}: {e}")
     
-    assert cfg.exp_manager.exp_name == os.path.basename(config_path).replace('.yaml', ''), \
+    # assert os.path.basename(config_path).replace('.yaml', '') == cfg.exp_manager.exp_name, \
+    # assert cfg.exp_manager.phase_name + '__' + 
+    # assert cfg.exp_manager.exp_name == os.path.basename(config_path).replace('.yaml', ''), \
     f"Config file name '{os.path.basename(config_path)}' does not match experiment name '{cfg.exp_manager.exp_name}' in the config."
     
     exp_args = cfg.exp_manager
-    data_args = cfg.prepare_data
-    model_args = cfg.prepare_model
+    data_args = cfg.data
+    tokenizer_args = cfg.tokenizer
+    prompt_args = cfg.prompt
+    model_args = cfg.model
     train_args = cfg.train
-    eval_args = cfg.eval
+    eval_args = cfg.evaluate
     device_args = cfg.device
     gen_args = cfg.generate
-    device_args = cfg.device
 
-    if exp_args.print_cfg:
-        print(OmegaConf.to_yaml(cfg))
+    return cfg, exp_args, data_args, tokenizer_args, prompt_args, model_args, train_args, eval_args, gen_args, device_args
 
-    return cfg, exp_args, data_args, model_args, train_args, eval_args, gen_args, device_args
 
-from generate import get_model_class, load_model_for_generate
-from src.utils.model_utils import load_tokenizer
+def save_cfg(cfg, config_path):
+    """
+    Save the configuration to a YAML file.
 
-import re
+    Args:
+        cfg (OmegaConf): The configuration object to save.
+        config_path (str): The path where the configuration file will be saved.
+
+    Returns:
+        None
+    """
+    OmegaConf.save(cfg, config_path)
+
+
 # def extract_prediction(text):
 #     """
 #     Extracts the text after '### Summary:' using regex.
@@ -101,10 +119,11 @@ import re
 #     return prediction
 
 # Function to extract the final number from generated text
-def extract_prediction(text, min_value=np.iinfo(np.int32).min, max_value=np.iinfo(np.int32).max):
+def extract_prediction(response, min_value=np.iinfo(np.int32).min, max_value=np.iinfo(np.int32).max):
     try:
-        # matches = re.findall(r'### Solution:\s+.*?Answer:\s*([\d,]+)', text, re.DOTALL)
-        matches = re.findall(r'### Solution:.*?Answer:\s*([\d,]+)', text, re.DOTALL)
+        # matches = re.findall(r'Solution:.*?Answer:.*([\d,]+)', response, re.DOTALL)
+        matches = re.findall(r'Solution:.*?Reason:.*Answer:.*?([\d,]+)', response, re.DOTALL)
+
         if matches:
             answer =  matches[0]
             answer = answer.replace(',', '')
@@ -120,34 +139,130 @@ def extract_prediction(text, min_value=np.iinfo(np.int32).min, max_value=np.iinf
         return answer
     except Exception:
         return "-1"
+    
+import re
+
+def extract_numeric_answer(response):
+    """
+    Extract the numeric answer from the response text.
+
+    Args:
+        response (str): The response text.
+
+    Returns:
+        str: The extracted numeric answer.
+    """
+    # Use regular expression to find the answer
+    match = re.search(r'Answer:\s*(\d+)', response)
+    if match:
+        return match.group(1)
+    else:
+        return None
+
+
+def eval(model, tokenizer, test_loader, eval_args, exp_args, gen_args, exp_results_dir):
+    """
+    Evaluates a model on a test dataset, generates predictions, and saves results in multiple formats.
+
+    Args:
+        model: The model to evaluate.
+        tokenizer: Tokenizer for decoding model outputs.
+        test_loader: DataLoader for the test dataset.
+        eval_args: Arguments related to evaluation (e.g., break_step, do_extract_prediction).
+        exp_args: Experiment arguments (e.g., exp_name).
+        gen_args: Generation arguments (e.g., max_new_tokens, temperature).
+        exp_results_dir: Directory to save results.
+        result_file_types: List of file types to save results (e.g., ['txt', 'json', 'csv']).
+    """
+
+    # Ensure results directory exists
+    os.makedirs(exp_results_dir, exist_ok=True)
+
+    accuracy_metric = evaluate.load("accuracy")
+
+    predictions_list = []
+
+    model.eval()
+    with torch.no_grad():
+        for step, batch in enumerate(tqdm(test_loader, desc="Evaluating")):
+            if step == eval_args.break_step:
+                break
+
+            input_ids = batch['input_ids'].squeeze(1).to(model.device)
+            attention_mask = batch['attention_mask'].squeeze(1).to(model.device)
+
+            output_ids = model.generate(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                # pad_token_id=tokenizer.eos_token_id,
+                **gen_args.gen_args
+            )
+
+            outputs = tokenizer.batch_decode(output_ids, skip_special_tokens=gen_args.skip_special_tokens)
+
+            pred_texts = [extract_prediction(output) if eval_args.do_extract_prediction else output for output in outputs]
+            true_texts = [answer.replace(',', '') for answer in batch['answer']]
+
+            try:
+                accuracy_metric.add_batch(predictions=pred_texts, references=true_texts)
+            except Exception as e:
+                print(f"Error adding batch to accuracy metric: {e}")
+                continue
+
+            ids = batch['index']
+
+            # Store predictions in a structured format
+            for id, output, pred_text, true_text in zip(ids, outputs, pred_texts, true_texts):
+                predictions_list.append({
+                    "id": id,
+                    "output": output,
+                    "prediction": pred_text,
+                    "ground_truth": true_text,
+                    "correct": pred_text == true_text
+                })
+
+    # Compute final accuracy
+    results = accuracy_metric.compute()
+    print(f"Accuracy: {results}")
+
+    # Save predictions
+    save_predictions(predictions_list, exp_results_dir, eval_args.prediction_filename)
+
+    # Save accuracy metrics
+    metrics = {
+        "exp_name": exp_args.exp_name,
+        "accuracy": results
+    }
+    save_metrics(metrics, exp_results_dir, eval_args.metric_filename)
+
+
+def parse_args():
+    import argparse
+    parser = argparse.ArgumentParser(description="Load config.")
+    parser.add_argument("--config_path", type=str, required=True, help="Path to the YAML config file.")
+
+    args, override_args = parser.parse_known_args()
+    return args, override_args
 
 def main():
 
-    # Setup logging
-    logger = setup_logger()
-
     # Setup environment
-    logger.info("SETTING UP ENVIRONMENT...")
+    hprint("1: Setting up environment...")
     setup_environment()
 
 
     # Parse arguments
-    parser = argparse.ArgumentParser(description='Load experiment configurations.')
-    parser.add_argument(
-        '--config_path',
-        type=str,
-        required=True,
-        help='Path to the configuration file for the experiment.'
-    )
-
-    args, override_args = parser.parse_known_args()
+    args, override_args = parse_args()
 
     # Load configuration
-    logger.info("LOADING CONFIGURATIONS...")
-    cfg, exp_args, data_args, model_args, train_args, eval_args, gen_args, device_args = load_cfg(config_path=args.config_path, override_args=override_args)
+    hprint("1: Loading configuration...")
+    cfg, exp_args, data_args, tokenizer_args, prompt_args, model_args, train_args, eval_args, gen_args, device_args = load_cfg(config_path=args.config_path, override_args=override_args)
+    
+    if cfg.exp_manager.print_cfg:
+        hprint("2: Showing configuration...")
+        fprint(OmegaConf.to_yaml(cfg))
     
     # Create experiment directories
-    # logger.info("CREATING DIRECTORIES...")""
     exp_name = cfg.exp_manager.exp_name
     exps_dir = cfg.exp_manager.exps_dir
 
@@ -155,32 +270,30 @@ def main():
 
     # import shutil
     # shutil.copy(args.config_path, exp_dir)
-
-    OmegaConf.save(cfg, os.path.join(exp_dir, 'eval_' + exp_name) + '.yaml')
+    
+    #Save configuration if have any changes from the overrides
+    config_path = os.path.join(exp_dir, 'eval_' + exp_name + '.yaml')
+    save_cfg(cfg, config_path)
+    pprint(f"2: Configuration saved to {config_path}")
 
     # Set seed
     set_seed(exp_args.seed)
 
     #Load dataset
-    if data_args.dataset.is_prepared:
-        # Get the path to the processed data
-        processed_data_path = os.path.normpath(data_args.dataset.prepared_data_path)
-        
-        # Check if the processed data exists
-        if not os.path.isfile(processed_data_path):
-            raise FileNotFoundError(f"Processed data not found at: {processed_data_path}")
-        
-        # Load the dataset
-        logger.info("LOADING PROCESSED DATASET...")
-        dataset = joblib.load(processed_data_path)
+    if data_args.is_prepared:
+        hprint("1: Data is prepared, loading...")
+        prepare_data_path = data_args.prepared_data_path
+        dataset = joblib.load(prepare_data_path)
     else:
-        # Prepare dataset
-        logger.info("PREPARING DATASET...")
-        dataset, processed_data_path = prepare_data(exp_args, data_args, model_args)
+        hprint("1: Preparing data...")
+        dataset = prepare_data(exp_args, data_args, tokenizer_args, prompt_args, model_args)
 
+    # Get test dataset
+    hprint("2: Getting test dataset...")
     test_ds = dataset['test']
     test_ds = test_ds.with_format("torch")
 
+    hprint("2: Creating test dataloader...")   
     test_loader = DataLoader(test_ds, batch_size=eval_args.batch_size, shuffle=False)
 
     from accelerate import Accelerator
@@ -188,99 +301,23 @@ def main():
 
     # Set seed
     set_seed(exp_args.seed)
-    
-    tokenizer = load_tokenizer(data_args, model_args)
-    # print(tokenizer)
+
+    hprint("1: Loading model and tokenizer...")
+    hprint("2: Loading model...")
     model = load_model_for_generate(model_args, device_args)
+
+    hprint("2: Loading tokenizer...")
+    tokenizer = load_tokenizer(tokenizer_args, model_args, prompt_args)
+
     
     model = model.to(accelerator.device)
     # model, test_loader = accelerator.prepare(model, test_loader)
     
-
-    # accuracy_metric = evaluate.load("accuracy")
-    accuracy_metric = evaluate.load("accuracy")
-    
-    logger.info("EVALUATING...")
-    
-    prediction_file = os.path.join(exp_results_dir, eval_args.prediction_file)
-    with open(prediction_file, "w", encoding="utf-8") as f:
-        f.write(f'Exp Name: {exp_args.exp_name}\n')
-        f.write("-" * 96 + "\n\n")
-        
-        model.eval()
-        with torch.no_grad():
-          for step, batch in enumerate(tqdm(test_loader)):
-              if step == eval_args.break_step:
-                  break
-              
-              input_ids = batch['input_ids'].squeeze(1).to(accelerator.device)
-              attention_mask = batch['attention_mask'].squeeze(1).to(accelerator.device)
-              # batch.to(accelerator.device)
-                
-              output_ids = model.generate(input_ids=input_ids, 
-                                          attention_mask=attention_mask, 
-                                          pad_token_id=tokenizer.eos_token_id,
-                                          max_new_tokens=gen_args['max_new_tokens'],
-                                          temperature=gen_args['temperature']
-                                         )
-              # output_ids = model.generate(**batch ,
-              #                             pad_token_id=tokenizer.eos_token_id,
-              #                             max_new_tokens=gen_args['max_new_tokens'])
-              
-              outputs = tokenizer.batch_decode(output_ids, skip_special_tokens=True)
-
-              if eval_args.do_extract_prediction:
-                  pred_texts = [extract_prediction(output) for output in outputs]
-                  
-              else:
-                  pred_texts = outputs
-              
-              # true_texts = batch[data_args.dataset.output_col]
-              true_texts = batch['answer']
-              true_texts = [answer.replace(',', '') for answer in true_texts]
-
-              try:
-                  accuracy_metric.add_batch(predictions=pred_texts, references=true_texts)
-              except:
-                  # print(pred_answers)
-                  # print(true_answers)
-                  continue
-
-              ids = batch[data_args.dataset.id_col]
-              
-              # Write prediction to file
-              for id, output, pred_text, true_text in zip(ids, outputs, pred_texts, true_texts):
-                is_correct = True if pred_text == true_text else False # 1 = Correct, 0 = Incorrect
-                
-                f.write(f'Id: {id}\n')
-                f.write("-" * 12 + "\n")
-                
-                f.write(f"Output:\n")
-                f.write(f"{output}\n")
-                f.write("-" * 12 + "\n")
-                
-                f.write(f"Prediction\n")
-                f.write(f"{pred_text}\n")
-                f.write("-" * 12 + "\n")
-                
-                f.write(f"Ground Truth: {true_text}\n")
-                f.write("-" * 12 + "\n")
-                # f.write("-" * 96 + "\n\n")
-                
-                f.write(f"Correct?: {is_correct}\n")
-                f.write("-" * 96 + "\n\n")
+    hprint("1: Evaluating model...")
+    # Evaluate model
+    eval(model, tokenizer, test_loader, eval_args, exp_args, gen_args, exp_results_dir)
 
 
-    # Compute final accuracy
-    results = accuracy_metric.compute()
-    print(f"Accuracy: {results}")
-
-    # Save to file
-    result_file = eval_args.result_file
-    with open(os.path.join(exp_results_dir, result_file), "w") as f:
-        f.write(f'Exp Name: {exp_args.exp_name}\n')
-        f.write("-" * 96 + "\n\n")
-        f.write(f"Accuracy: {results}\n")
 
 
 if __name__ == "__main__":
