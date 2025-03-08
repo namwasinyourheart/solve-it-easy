@@ -1,7 +1,9 @@
 import os
 import argparse
 import time
-
+import re
+import json
+import pandas as pd
 
 import joblib
 import wandb
@@ -10,9 +12,6 @@ from hydra import initialize, compose
 from hydra.utils import instantiate
 
 from omegaconf import OmegaConf
-
-from prepare_data import show_dataset_examples
-from prepare_data import prepare_data
 
 from peft import (
     LoraConfig, 
@@ -25,12 +24,18 @@ from trl import (
     SFTTrainer
 )
 
-from transformers import DataCollatorForLanguageModeling, set_seed
-import torch
+from transformers import DataCollatorForLanguageModeling, set_seed #Seq2SeqTrainer
 
-from src.utils.model_utils import get_model_tokenizer, get_peft_config
-from src.utils.log_utils import setup_logger
+from src.utils.hieralog import hprint, pprint, fprint
+from prepare_data import prepare_data
+from src.utils.model_utils1 import get_model_tokenizer, get_peft_config
 from src.utils.exp_utils import setup_environment, create_exp_dir
+from src.metrics import compute_metrics_wrapper
+
+from src.utils.data_utils import get_data_subset
+
+from src.callbacks import ProgressCallback, decode_predictions
+
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -63,21 +68,48 @@ def load_cfg(config_path, override_args=None):
     except Exception as e:
         raise RuntimeError(f"Failed to load configuration from {config_path}: {e}")
     
-    assert cfg.exp_manager.exp_name == os.path.basename(config_path).replace('.yaml', ''), \
+    # assert os.path.basename(config_path).replace('.yaml', '') == cfg.exp_manager.exp_name, \
+    # assert cfg.exp_manager.phase_name + '__' + 
+    # assert cfg.exp_manager.exp_name == os.path.basename(config_path).replace('.yaml', ''), \
     f"Config file name '{os.path.basename(config_path)}' does not match experiment name '{cfg.exp_manager.exp_name}' in the config."
     
     exp_args = cfg.exp_manager
-    data_args = cfg.prepare_data
-    model_args = cfg.prepare_model
+    data_args = cfg.data
+    tokenizer_args = cfg.tokenizer
+    prompt_args = cfg.prompt
+    model_args = cfg.model
     train_args = cfg.train
-    eval_args = cfg.eval
-    gen_args = cfg.generate
+    eval_args = cfg.evaluate
     device_args = cfg.device
+    gen_args = cfg.generate
 
-    if exp_args.print_cfg:
-        print(OmegaConf.to_yaml(cfg))
+    return (
+        cfg, 
+        exp_args, 
+        data_args, 
+        tokenizer_args, 
+        prompt_args, 
+        model_args, 
+        train_args, 
+        eval_args, 
+        gen_args, 
+        device_args
+    )
 
-    return cfg, exp_args, data_args, model_args, train_args, eval_args, gen_args, device_args
+
+def save_cfg(cfg, config_path):
+    """
+    Save the configuration to a YAML file.
+
+    Args:
+        cfg (OmegaConf): The configuration object to save.
+        config_path (str): The path where the configuration file will be saved.
+
+    Returns:
+        None
+    """
+    OmegaConf.save(cfg, config_path)
+
 
 def parse_args():
     import argparse
@@ -87,187 +119,124 @@ def parse_args():
     args, override_args = parser.parse_known_args()
     return args, override_args
 
-from src.metrics import * #compute_metrics_wrapper
+def finetune(
+    model, tokenizer, 
+    train_ds, val_ds, test_ds,
+    exp_args, data_args, tokenizer_args, prompt_args, 
+    model_args, train_args, eval_args, gen_args, device_args, 
+    exp_dir, exp_data_dir, exp_checkpoints_dir, exp_results_dir
+):
+    """
+    Trains and evaluates the provided model using the specified datasets and configurations.
 
-def main():
-    # Setup logging
-    logger = setup_logger()
+    This function fine-tunes a preloaded model on a given training dataset, evaluates it on 
+    a validation set, and optionally performs predictions on a test set. It supports various 
+    configurations for model training, evaluation, and generation while handling logging, 
+    checkpointing, and result saving.
 
-    # Setup environment
-    logger.info("SETTING UP ENVIRONMENT...")
-    setup_environment()
-    
-    # Parse arguments
-    args, override_args = parse_args()
+    Args:
+        model: The preloaded model to be fine-tuned.
+        tokenizer: The tokenizer associated with the model.
+        train_ds: The dataset used for training.
+        val_ds: The dataset used for validation.
+        test_ds: The dataset used for testing (if applicable).
+        exp_args: Experiment-related arguments and configurations.
+        data_args: Parameters related to dataset processing and handling.
+        tokenizer_args: Arguments for tokenizer configuration.
+        prompt_args: Configuration for prompt engineering or formatting.
+        model_args: Model-specific settings and hyperparameters.
+        train_args: Training-related parameters, including optimizer settings.
+        eval_args: Evaluation-related configurations and metrics.
+        gen_args: Arguments for text generation (if applicable).
+        device_args: Hardware-related configurations (e.g., GPU, TPU settings).
+        exp_dir: Root directory for experiment outputs.
+        exp_data_dir: Directory for storing dataset files.
+        exp_checkpoints_dir: Path to save model checkpoints.
+        exp_results_dir: Directory for saving evaluation results and predictions.
+    """
 
-    # Load configuration
-    logger.info("LOADING CONFIGURATIONS...")
-    cfg, exp_args, data_args, model_args, train_args, eval_args, gen_args, device_args = load_cfg(config_path=args.config_path, override_args=override_args)
-    
-    # Create experiment directories
-    # logger.info("CREATING DIRECTORIES...")""
-    exp_name = cfg.exp_manager.exp_name
-    exps_dir = cfg.exp_manager.exps_dir
-
-    (exp_dir, exp_data_dir, exp_checkpoints_dir, exp_results_dir) = create_exp_dir(exp_name, exps_dir)
-
-    # import shutil
-    # shutil.copy(args.config_path, exp_dir)
-
-    OmegaConf.save(cfg, os.path.join(exp_dir, exp_name)+'.yaml')
-
-
-    exp_args = cfg.exp_manager
-    train_args = cfg.train
-    data_args = cfg.prepare_data
-    model_args = cfg.prepare_model
-    device_args = cfg.device
-
-    # Set seed
-    set_seed(exp_args.seed)
-
-    if data_args.dataset.is_prepared:
-        # Get the path to the prepared data
-        prepared_data_path = os.path.normpath(data_args.dataset.prepared_data_path)
-        
-        # Check if the processed data exists
-        if not os.path.isfile(prepared_data_path):
-            raise FileNotFoundError(f"Processed data not found at: {prepared_data_path}")
-        
-        # Load the dataset
-        logger.info("LOADING PREPARED DATASET...")
-        dataset = joblib.load(prepared_data_path)
-    else:
-        # Prepare dataset
-        logger.info("PREPARING DATASET...")
-        dataset, prepared_data_path = prepare_data(exp_args, data_args, model_args)
-
-    # Show dataset examples
-    if data_args.dataset.do_show:
-        show_dataset_examples(dataset)
-
-    # Set seed before initializing model.
-    set_seed(exp_args.seed)
-
-    # LOADING MODEL
-    logger.info("LOADING MODEL AND TOKENIZER...")
-    model, tokenizer = get_model_tokenizer(data_args, model_args, device_args)
-
-    if exp_args.print_model:
-        print(model)
-    # print(tokenizer)
-
-
-    # PREPARE MODEL
-    # Enabling gradient checkpointing to reduce memory usage during fine-tuning
+    # Prepare model for training
     model.gradient_checkpointing_enable()
     model = prepare_model_for_kbit_training(model)
 
     peft_config = get_peft_config(train_args)
-    print(peft_config)
+    if exp_args.print_peft_config:
+        pprint(peft_config)
 
     if train_args.use_peft:
         model = get_peft_model(model, peft_config)
 
-    # Print information about the percentage of trainable parameters
-    try:
-        model.print_trainable_parameters()
-    except:
-        from src.utils.model_utils import print_trainable_parameters
-        print_trainable_parameters(model)
+    # Print trainable parameters
+    if exp_args.print_trainable_parameters:
+        try:
+            model.print_trainable_parameters()
+        except:
+            from src.utils.model_utils1 import print_trainable_parameters
+            print_trainable_parameters(model)
 
+    # Print parameter datatypes
+    if exp_args.print_parameter_datatypes:
+        from src.utils.model_utils1 import print_parameter_datatypes
+        print_parameter_datatypes(model)
+
+    # Setup Data Collator
     data_collator = DataCollatorForLanguageModeling(
-            # response_template=RESPONSE_KEY,
-            tokenizer=tokenizer, 
-            mlm=False, 
-            return_tensors="pt", 
-            # pad_to_multiple_of=cfg.data.pad_to_multiple_of
-        )
-    
-    # if exp_args.wandb.use_wandb:
+        tokenizer=tokenizer, 
+        mlm=False, 
+        return_tensors="pt"
+    )
+
+    # Initialize W&B
     wandb.init(
-        project=cfg.exp_manager.wandb.project,
-        # name = cfg.exp_manager.exp_name
+        project=exp_args.wandb.project,
     )
 
-    current_date = time.strftime("%Y%m%d_%H%M%S")
-    training_args = instantiate(train_args.train_args, 
-                                    output_dir=exp_checkpoints_dir, 
-                                    report_to="none",
-                                    # run_name=wandb.run.name
-                        )
-
-    # Log on each process a small summary
-    logger.warning(
-        f"Process rank: {training_args.local_rank}, device: {training_args.device}, n_gpu: {training_args.n_gpu}"
-        + f" distributed training: {bool(training_args.local_rank != -1)}, 16-bits training: {training_args.fp16}"
+    # Training arguments
+    training_args = instantiate(
+        train_args.train_args, 
+        output_dir=exp_checkpoints_dir, 
+        report_to="wandb",
+        run_name=wandb.run.name
     )
 
-    if data_args.dataset.do_split:
-        train_ds, val_ds, test_ds = dataset['train'], dataset['val'], dataset['test']
-    else:
-        train_ds = dataset['train']
-        val_ds = test_ds = train_ds
-
-    def get_data_subset(n_samples, dataset, seed):
-        if n_samples == -1:
-            subset = dataset
-        else:
-            subset = dataset.shuffle(seed=seed)
-            subset = subset.select(range(n_samples))
-
-        return subset
-
-    if train_args.train_n_samples:
-        # train_ds = train_ds.shuffle(seed=exp_args.seed).select(range(train_args.train_n_samples))
-        train_ds = get_data_subset(train_args.train_n_samples, train_ds, exp_args.seed)
-
-    if train_args.val_n_samples:
-        val_ds = get_data_subset(train_args.val_n_samples, val_ds, exp_args.seed)
-
-    if train_args.test_n_samples:
-        test_ds = get_data_subset(train_args.test_n_samples, test_ds, exp_args.seed)
-
-    # from src.metrics import * #compute_metrics_wrapper
-
-    trainer = SFTTrainer(
-            model=model,
-            args=training_args,
-            train_dataset=train_ds,
-            eval_dataset=val_ds,
-            compute_metrics=compute_metrics_wrapper(tokenizer, train_args.eval_metrics),
-            tokenizer=tokenizer,
-            data_collator=data_collator,
+    # Log device info if required
+    if exp_args.print_device:
+        pprint(
+            f"Process Rank: {training_args.local_rank}, Device: {training_args.device}, N_GPU: {training_args.n_gpu}, "
+            f"Distributed Training: {bool(training_args.local_rank != -1)}"
         )
 
-    # print(training_args)
+    # Initialize Trainer
+    trainer = SFTTrainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_ds,
+        eval_dataset=val_ds,
+        compute_metrics=compute_metrics_wrapper(tokenizer, train_args.eval_metrics),
+        tokenizer=tokenizer,
+        data_collator=data_collator,
+    )
 
-    model.config.use_cache = False  # re-enable for inference to speed up predictions for similar inputs
+    model.config.use_cache = False  # re-enable for inference
 
-    from src.callbacks import WandbPredictionProgressCallback, decode_predictions
-
-    progress_callback = WandbPredictionProgressCallback(
+    # Setup training progress callback
+    progress_callback = ProgressCallback(
         trainer=trainer,
         tokenizer=tokenizer,
-        val_dataset=val_ds,
-        num_samples=10,
-        freq=1,
+        dataset=val_ds,
+        **train_args.progress_callback
     )
 
     all_metrics = {"run_name": wandb.run.name}
-    
-    # TRAINING
+
+    # Training
     if training_args.do_train:
-        logger.info("TRAINING...")
+        hprint("1: Training...")
         
-        # Add the callback to the trainer
         trainer.add_callback(progress_callback)
-        logger.info('trainer_callback_list: %s', trainer.callback_handler.callbacks)
 
         if training_args.resume_from_checkpoint:
             checkpoint = training_args.resume_from_checkpoint
-        # elif last_checkpoint:
-        #     checkpoint = last_checkpoint
             train_result = trainer.train(resume_from_checkpoint=checkpoint)
         else:
             train_result = trainer.train()
@@ -279,59 +248,40 @@ def main():
 
         all_metrics.update(metrics)
 
-
-        # Save model
-        logger.info("SAVING MODEL...")
+        # Save trained adapter
+        hprint("1: Saving model...")
         trainer.model.save_pretrained(os.path.join(exp_results_dir, 'adapter'))
-        logger.info(f"Model saved to {os.path.join(exp_results_dir, 'adapter')}"),
+        pprint(f"2: Model saved to {os.path.join(exp_results_dir, 'adapter')}")
 
-        logger.info("TRAINING COMPLETED.")
-
-
-    # EVALUATION
+    # Evaluation
     if training_args.do_eval:
-        logger.info("EVALUATING...")
-        metrics = trainer.evaluate(
-            eval_dataset=val_ds, 
-            metric_key_prefix="eval")
+        hprint("1: Evaluating...")
+        metrics = trainer.evaluate(eval_dataset=val_ds, metric_key_prefix="eval")
         trainer.log_metrics("eval", metrics)
         trainer.save_metrics("eval", metrics)
         all_metrics.update(metrics)
 
-
-    import pandas as pd
-    # PREDICTION
+    # Prediction
     if training_args.do_predict:
-        logger.info("PREDICTING...")
-        predictions = trainer.predict(
-            test_dataset=test_ds,
-            metric_key_prefix='test'
-        )
+        hprint("1: Predicting...")
+        predictions = trainer.predict(test_dataset=test_ds, metric_key_prefix='test')
         metrics = predictions.metrics
         all_metrics.update(metrics)
         
-        # logger.info(f'predictions: {predictions}')
-        # print("DECODING PREDICTION...")
         predictions = decode_predictions(tokenizer, predictions)
         predictions_df = pd.DataFrame(predictions)
         predictions_df.to_csv(os.path.join(exp_results_dir, 'test_predictions.csv'), index=False)
-    
-    import json
-    
-    if (training_args.do_train or training_args.do_eval or training_args.do_predict):
-            with open(os.path.join(exp_results_dir, "metrics.json"), "w") as fout:
-                fout.write(json.dumps(all_metrics))
 
+    # Save metrics
+    if training_args.do_train or training_args.do_eval or training_args.do_predict:
+        with open(os.path.join(exp_results_dir, train_args.train_metric_filename), "w") as fout:
+            fout.write(json.dumps(all_metrics))
 
-     # Merge model
-    if training_args.do_train == True and train_args.do_merge == True:
-        logger.info("MERGING MODEL...")
-        # adapter_dir = os.path.join(exp_dir, 'results')
-        # os.makedirs(adapter_dir, exist_ok=True)
-
-
+    # Merge model if required
+    if training_args.do_train and train_args.merge_after_train:
+        hprint("1: Merging model...")
         adapter_path = os.path.join(exp_results_dir, 'adapter')
-        base_model, tokenizer = get_model_tokenizer(data_args, model_args, device_args)
+        base_model, tokenizer = get_model_tokenizer(model_args, tokenizer_args, prompt_args, device_args)
 
         from peft import PeftModel
         finetuned_model = PeftModel.from_pretrained(base_model, adapter_path)
@@ -343,25 +293,93 @@ def main():
         # Save tokenizer
         tokenizer.save_pretrained(os.path.join(exp_results_dir, 'merged_model'))
 
-    
-    # Log exp artifact
-    if exp_args.wandb.log_artifact == True:
-        logger.info("LOGGING EXP ARTIFACTS...")
-        # Create an artifact
+    # Log experiment artifact
+    if exp_args.wandb.log_artifact:
+        hprint("1: Logging artifact...")
         artifact = wandb.Artifact(
             name=exp_args.exp_name, 
             type="exp", 
-            # description="Dummy dataset with CSV files"
         )
 
-        # Add the directory to the artifact
         artifact.add_dir(exp_dir)
-
         wandb.log_artifact(artifact)
 
-    # Finish the W&B run
     wandb.finish()
+
+
+
+def main():
+
+    # Setup environment
+    hprint("1: Setting up environment...")
+    setup_environment()
     
+    # Parse arguments
+    args, override_args = parse_args()
+
+    # Load configuration
+    hprint("1: Loading configuration...")
+    cfg, exp_args, data_args, tokenizer_args, prompt_args, model_args, train_args, eval_args, gen_args, device_args = load_cfg(config_path=args.config_path, override_args=override_args)
+    
+    if cfg.exp_manager.print_cfg:
+        hprint("2: Showing configuration...")
+        fprint(OmegaConf.to_yaml(cfg))
+    
+    # Create experiment directories
+    exp_name = cfg.exp_manager.exp_name
+    exps_dir = cfg.exp_manager.exps_dir
+
+    (exp_dir, exp_data_dir, exp_checkpoints_dir, exp_results_dir) = create_exp_dir(exp_name, exps_dir)
+    # import shutil
+    # shutil.copy(args.config_path, exp_dir)
+
+    # Save configuration if have any changes from the overrides
+    config_path = os.path.join(exp_dir, 'eval_' + exp_name + '.yaml')
+    save_cfg(cfg, config_path)
+    pprint(f"2: Configuration saved to {config_path}")
+
+
+    # Set seed
+    set_seed(exp_args.seed)
+
+    #Load dataset
+    if data_args.is_prepared:
+        hprint("1: Data is prepared, loading...")
+        prepared_data_path = data_args.prepared_data_path
+        dataset = joblib.load(prepared_data_path)
+    else:
+        hprint("1: Preparing data...")
+        dataset = prepare_data(exp_args, data_args, tokenizer_args, prompt_args, model_args)
+
+        train_ds, val_ds, test_ds = dataset['train'], dataset['val'], dataset['test']
+
+    if train_args.train_n_samples:
+        train_ds = get_data_subset(train_args.train_n_samples, train_ds, exp_args.seed)
+
+    if train_args.val_n_samples:
+        val_ds = get_data_subset(train_args.val_n_samples, val_ds, exp_args.seed)
+
+    if train_args.test_n_samples:
+        test_ds = get_data_subset(train_args.test_n_samples, test_ds, exp_args.seed)
+
+    # Loading model and tokenizer
+    hprint("1: Loading model and tokenizer...")
+    model, tokenizer = get_model_tokenizer(model_args, tokenizer_args, prompt_args, device_args)
+
+    if exp_args.print_model:
+        pprint(model)
+
+    if exp_args.print_tokenizer:
+        pprint(tokenizer)
+   
+    finetune(
+        model, tokenizer, 
+        train_ds, val_ds, test_ds,
+        exp_args, data_args, tokenizer_args, prompt_args, 
+        model_args, train_args, eval_args, gen_args, device_args, 
+        exp_dir, exp_data_dir, exp_checkpoints_dir, exp_results_dir
+    )
+        
 
 if __name__ == "__main__":
     main()
