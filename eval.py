@@ -40,7 +40,7 @@ from prepare_data import prepare_data, show_dataset_examples
 
 
 from generate import get_model_class, load_model_for_generate
-from src.utils.model_utils1 import load_tokenizer
+from src.utils.model_utils import load_tokenizer
 from src.utils.eval_utils import save_predictions, save_metrics
 
 def load_cfg(config_path, override_args=None):
@@ -239,7 +239,7 @@ def eval(model, tokenizer, test_loader, eval_args, exp_args, gen_args, exp_resul
 def parse_args():
     import argparse
     parser = argparse.ArgumentParser(description="Load config.")
-    parser.add_argument("--config_path", type=str, required=True, help="Path to the YAML config file.")
+    parser.add_argument("--config-path", type=str, required=True, help="Path to the YAML config file.")
 
     args, override_args = parser.parse_known_args()
     return args, override_args
