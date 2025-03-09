@@ -17,7 +17,6 @@ from transformers import (
 
 
 from transformers import BitsAndBytesConfig
-# from vllm import LLM, SamplingParams
 
 from src.utils.model_utils import set_torch_dtype_and_attn_implementation, get_quantization_config
 from src.utils.exp_utils import setup_environment
@@ -83,17 +82,17 @@ def load_model_for_generate(model_args, device_args) -> PreTrainedModel:
 
     attn_implementation = model_args['attn_implementation']
 
-    if attn_implementation=='flash-attention-2':
+    if attn_implementation=='flash_attention_2':
         # Set torch_dtype and attn_implementation
         torch_dtype, attn_implementation = set_torch_dtype_and_attn_implementation()
 
     if model_args['torch_dtype']:
         torch_dtype = model_args['torch_dtype']
+        
+    else: torch_dtype = 'float16'
 
     # QLora Config
     quantization_config = get_quantization_config(model_args)
-
-    # model_class = get_model_class(model_args['pretrained_model_name_or_path'])
 
     if model_args.model_type == 'causal_lm':
         model_class = AutoModelForCausalLM
@@ -133,6 +132,7 @@ def load_model_for_generate(model_args, device_args) -> PreTrainedModel:
     return model
 
 def load_model_for_generate_vllm(model_args, gen_args, device_args):    
+    from vllm import LLM, SamplingParams
     # # Set torch_dtype and attn_implementation
     # torch_dtype, attn_implementation = set_torch_dtype_and_attn_implementation()
     torch_dtype = model_args['torch_dtype']
@@ -168,44 +168,98 @@ def load_tokenizer_for_generate(
         
     return tokenizer
 
-def prepare_prompt(prompt_args):
-    if prompt_args['use_only_input_text']:
-        return prompt_args['input_text']
 
-    for key, value in prompt_args.items():
-        if not key.startswith('use') and key != 'end_key' and not value:
-            value = ''
-            prompt_args[key] = value
+# def prepare_prompt_for_generate(prompt_args):
+#     if prompt_args['use_only_input_text']:
+#         return prompt_args['input_text']
+
+#     for key, value in prompt_args.items():
+#         if not key.startswith('use') and key != 'end_key' and not value:
+#             value = ''
+#             prompt_args[key] = value
 
     
-    intro = f"{prompt_args['intro_text']}"
-    instruction = f"{prompt_args['instruction_key']}\n{prompt_args['instruction_text']}"
+#     intro = f"{prompt_args['intro_text']}"
+#     instruction = f"{prompt_args['instruction_key']}\n{prompt_args['instruction_text']}"
 
-    if not prompt_args['use_examples']:
-        examples = None
-    else:
-        example_template = prompt_args['examples_template']
-        formatted_examples = "\n".join(
-            example_template.format(**example) for example in prompt_args['examples_list']
-        )
-        examples = f"{prompt_args['examples_key']}\n{formatted_examples}"
+#     if not prompt_args['use_examples']:
+#         examples = None
+#     else:
+#         example_template = prompt_args['examples_template']
+#         formatted_examples = "\n".join(
+#             example_template.format(**example) for example in prompt_args['examples_list']
+#         )
+#         examples = f"{prompt_args['examples_key']}\n{formatted_examples}"
 
-    input = f"{prompt_args['input_key']}\n{prompt_args['input_text']}"
+#     input = f"{prompt_args['input_key']}\n{prompt_args['input_text']}"
 
-    if not prompt_args['use_context']:
-        context = None
-    else:
-        context = f"{prompt_args['context_key']}\n{prompt_args['context_text']}"
+#     if not prompt_args['use_context']:
+#         context = None
+#     else:
+#         context = f"{prompt_args['context_key']}\n{prompt_args['context_text']}"
 
-    response_key = f"{prompt_args['response_key']}"
+#     response_key = f"{prompt_args['response_key']}"
             
-    # Collect all non-empty parts and join them
-    parts = [part.strip() for part in [intro, instruction, examples, context, input, response_key] if part and len(part.strip())]
+#     # Collect all non-empty parts and join them
+#     parts = [part.strip() for part in [intro, instruction, examples, context, input, response_key] if part and len(part.strip())]
 
-    prompt = "\n\n".join(parts) + '\n'
+#     prompt = "\n\n".join(parts) + '\n'
 
+
+#     return prompt
+
+def generate_prompt_for_inference(prompt_args):
+    """
+    Generates a prompt for inference using only the necessary arguments.
+
+    Args:
+        prompt_args (dict): Dictionary containing prompt formatting options, including 'input_text'.
+
+    Returns:
+        str: The formatted prompt for inference.
+    """
+    use_context = prompt_args.get("use_context", False)
+    use_response_format_guide = prompt_args.get("use_response_format_guide", False)
+
+    prompt_parts = {}
+
+    def get_section(key, text_key=None):
+        parts = []
+        val = prompt_args.get(key)
+        if val:
+            parts.append(val)
+        if text_key:
+            val = prompt_args.get(text_key)
+            if val:
+                parts.append(val)
+        return "\n".join(parts).strip() or None
+
+    prompt_parts["intro"] = get_section("intro_key", "intro_text")
+    prompt_parts["instruction"] = get_section("instruction_key", "instruction_text")
+    prompt_parts["response_format_guide"] = (
+        get_section("response_format_guide_key", "response_format_guide_text")
+        if use_response_format_guide
+        else None
+    )
+    prompt_parts["context"] = get_section("context_key", "context_text") if use_context else None
+
+    # Build input section using 'input_text' from prompt_args
+    input_text = prompt_args.get("input_text", "")
+    input_parts = []
+    if prompt_args.get("input_key"):
+        input_parts.append(prompt_args.get("input_key"))
+    input_parts.append(input_text)
+    prompt_parts["input"] = "\n".join(filter(None, input_parts)).strip() or None
+
+    prompt_parts["pre_response"] = prompt_args.get("pre_response_text")
+
+    # Construct final prompt
+    combined = [v for v in prompt_parts.values() if v]
+    prompt = prompt_args.get("sep", "\n\n").join(combined)
 
     return prompt
+
+
 
 
 def postprocess(prompt: str, tokenizer, output: str, response_key: str, end_key: str, return_full: bool=False):
@@ -239,13 +293,14 @@ def postprocess(prompt: str, tokenizer, output: str, response_key: str, end_key:
 
 
 def generate_response_vllm(model_args, prompt_args, gen_args, device_args):
+    from vllm import LLM, SamplingParams
     model = load_model_for_generate_vllm(model_args, gen_args, device_args)
-    prompt = prepare_prompt(prompt_args)
+    prompt = generate_prompt_for_inference(prompt_args)
 
     gen_params = {
-        "top_p": gen_args['top_p'],
-        "top_k": gen_args['top_k'],
-        "temperature": gen_args['temperature']
+        "top_p": gen_args.gen_args['top_p'],
+        "top_k": gen_args.gen_args['top_k'],
+        "temperature": gen_args.gen_args['temperature']
     }
 
     sampling_params = SamplingParams(**gen_params)
@@ -256,7 +311,7 @@ def generate_response_vllm(model_args, prompt_args, gen_args, device_args):
     return generated_text
 
 
-def generate_response(model_args, prompt_args, gen_args, device_args):
+def generate_response(model_args, tokenizer_args, prompt_args, gen_args, device_args):
 
 
     from accelerate import Accelerator
@@ -266,16 +321,12 @@ def generate_response(model_args, prompt_args, gen_args, device_args):
     
     tokenizer = load_tokenizer_for_generate(model_args)
 
-    prompt = prepare_prompt(prompt_args)
+    prompt = generate_prompt_for_inference(prompt_args)
 
     # input = tokenizer(prompt, return_tensors='pt', padding=False, truncation=True)
     input = tokenizer(prompt, 
-                      return_tensors='pt', 
-                    #   padding='max_length', 
-                      max_length=512, 
-                      truncation=True, 
-                      padding_side='left', 
-                      add_special_tokens=True)
+                      **tokenizer_args.tokenizer_args
+    )
     
     # print(input)
     input_ids = input.input_ids
@@ -284,13 +335,16 @@ def generate_response(model_args, prompt_args, gen_args, device_args):
     # device = accelerator.device
 
     model = model.to(accelerator.device)
+    # input_ids = input_ids.to(accelerator.device)
+    # attention_mask = attention_mask.to(accelerator.device)
+
     input_ids = input_ids.squeeze(1).to(accelerator.device)
     attention_mask = attention_mask.squeeze(1).to(accelerator.device)
 
     output_ids = model.generate(input_ids=input_ids, 
                                 attention_mask=attention_mask,
-                                max_new_tokens=gen_args['max_new_tokens'], 
-                                pad_token_id=tokenizer.pad_token_id)
+                                **gen_args.gen_args
+    )
     
     output = tokenizer.decode(output_ids[0], 
                               skip_special_tokens=gen_args['skip_special_tokens'])
@@ -306,7 +360,7 @@ def generate_response(model_args, prompt_args, gen_args, device_args):
 def parse_args():
     import argparse
     parser = argparse.ArgumentParser(description="Load generation config.")
-    parser.add_argument("--config_path", type=str, required=True, help="Path to the YAML config file for generating.")
+    parser.add_argument("--config-path", type=str, required=True, help="Path to the YAML config file for generating.")
     parser.add_argument("--input_text", type=str, default=None, help="The text input (question).")
 
     return parser.parse_args()
@@ -315,6 +369,7 @@ def main():
     args = parse_args()
 
     # Load the generation config file
+
     cfg = OmegaConf.load(args.config_path)
 
     # Setup environment
@@ -324,6 +379,7 @@ def main():
     # print(OmegaConf.to_yaml(cfg))
 
     model_args = cfg.model
+    tokenizer_args = cfg.tokenizer
     prompt_args = cfg.prompt
     gen_args = cfg.generate
     device_args = cfg.device
@@ -336,10 +392,10 @@ def main():
         prompt_args['input_text'] = args.input_text
 
     if gen_args.use_vllm:
-        response = generate_response_vllm(model_args, prompt_args, gen_args, device_args)
+        response = generate_response_vllm(model_args, tokenizer_args, prompt_args, gen_args, device_args)
 
     else:
-        response = generate_response(model_args, prompt_args, gen_args, device_args)
+        response = generate_response(model_args, tokenizer_args, prompt_args, gen_args, device_args)
     print(response)
 
 if __name__ == "__main__":
