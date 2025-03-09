@@ -28,7 +28,7 @@ from transformers import DataCollatorForLanguageModeling, set_seed #Seq2SeqTrain
 
 from src.utils.hieralog import hprint, pprint, fprint
 from prepare_data import prepare_data
-from src.utils.model_utils1 import get_model_tokenizer, get_peft_config
+from src.utils.model_utils import get_model_tokenizer, get_peft_config
 from src.utils.exp_utils import setup_environment, create_exp_dir
 from src.metrics import compute_metrics_wrapper
 
@@ -114,7 +114,7 @@ def save_cfg(cfg, config_path):
 def parse_args():
     import argparse
     parser = argparse.ArgumentParser(description="Load generation config.")
-    parser.add_argument("--config_path", type=str, required=True, help="Path to the YAML config file for generating.")
+    parser.add_argument("--config-path", type=str, required=True, help="Path to the YAML config file for generating.")
 
     args, override_args = parser.parse_known_args()
     return args, override_args
@@ -171,12 +171,12 @@ def finetune(
         try:
             model.print_trainable_parameters()
         except:
-            from src.utils.model_utils1 import print_trainable_parameters
+            from src.utils.model_utils import print_trainable_parameters
             print_trainable_parameters(model)
 
     # Print parameter datatypes
     if exp_args.print_parameter_datatypes:
-        from src.utils.model_utils1 import print_parameter_datatypes
+        from src.utils.model_utils import print_parameter_datatypes
         print_parameter_datatypes(model)
 
     # Setup Data Collator
@@ -334,7 +334,7 @@ def main():
     # shutil.copy(args.config_path, exp_dir)
 
     # Save configuration if have any changes from the overrides
-    config_path = os.path.join(exp_dir, 'eval_' + exp_name + '.yaml')
+    config_path = os.path.join(exp_dir, 'sft_' + exp_name + '.yaml')
     save_cfg(cfg, config_path)
     pprint(f"2: Configuration saved to {config_path}")
 
