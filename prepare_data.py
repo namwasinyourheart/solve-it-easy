@@ -16,7 +16,7 @@ from hydra import initialize, compose
 from omegaconf import OmegaConf
 
 from transformers import set_seed
-from src.utils.model_utils1 import load_tokenizer
+from src.utils.model_utils import load_tokenizer
 
 from src.utils.exp_utils import setup_environment, create_exp_dir
 
@@ -75,12 +75,6 @@ def load_cfg(config_path, override_args=None):
     gen_args = cfg.generate
 
     return cfg, exp_args, data_args, tokenizer_args, prompt_args, model_args, train_args, eval_args, gen_args, device_args
-
-# def load_cfg(file_path: str) -> dict:
-#     """Loads user data from a YAML file using OmegaConf."""
-#     cfg = OmegaConf.load(file_path)
-#     return cfg
-
 
 def save_cfg(cfg, config_path):
     """
@@ -252,127 +246,6 @@ def generate_prompt_wrapper(tokenizer):
     return generate_prompt
 
 
-
-# def generate_prompt_wrapper(tokenizer):
-
-#     def generate_prompt(sample, data_args, prompt_args, exp_args) -> str:
-#         """
-#         Generates a structured prompt based on the provided dictionary.
-#         Sections are included only if their corresponding key/text is present and allowed by flags.
-#         """
-#         use_only_input_text = prompt_args.get("use_only_input_text", False)
-#         use_examples = prompt_args.get("use_examples", False)
-#         use_context = prompt_args.get("use_context", False)
-#         use_response_format_guide = prompt_args.get("use_response_format_guide", False)
-
-#         input_col = data_args.get("input_col", "problem")
-#         output_col = data_args.get("output_col", "solution")
-#         context_col = data_args.get("context_col", "context")
-
-#         if not prompt_args.get("end_key"):
-#             prompt_args["end_key"] = tokenizer.eos_token
-
-#         if use_only_input_text:
-#             prompt = sample[input_col]
-#             if exp_args.phase == "train":
-#                 prompt += prompt_args.get("sep", "\n\n") + sample[output_col]
-#         else:
-#             prompt_parts = {}
-
-#             def get_section(key, text_key=None):
-#                 parts = []
-#                 val = prompt_args.get(key)
-#                 if val:
-#                     parts.append(val)
-#                 if text_key:
-#                     val = prompt_args.get(text_key)
-#                     if val:
-#                         parts.append(val)
-#                 return "\n".join(parts).strip() or None
-
-#             prompt_parts["intro"] = get_section("intro_key", "intro_text")
-#             prompt_parts["instruction"] = get_section("instruction_key", "instruction_text")
-#             prompt_parts["response_format_guide"] = get_section("response_format_guide_key", "response_format_guide_text") if use_response_format_guide else None
-#             prompt_parts["examples"] = format_examples(prompt_args) if use_examples else None
-#             prompt_parts["context"] = get_section("context_key", "context_text") if use_context else None
-
-#             # Build input section
-#             input_parts = []
-#             if prompt_args.get("input_key"):
-#                 input_parts.append(prompt_args.get("input_key"))
-#             if exp_args.phase == "train":
-#                 input_parts.append(sample.get(input_col, ""))
-#             else:
-#                 input_parts.append(prompt_args.get("input_text", ""))
-#             prompt_parts["input"] = "\n".join(filter(None, input_parts)).strip() or None
-
-#             prompt_parts["pre_response"] = prompt_args.get("pre_response_text")
-
-#             # Build response section
-#             response_parts = []
-#             if prompt_args.get("response_key"):
-#                 response_parts.append(prompt_args.get("response_key"))
-#             if exp_args.phase == "train":
-#                 response_parts.append(sample.get(output_col, ""))
-#             prompt_parts["response"] = "\n".join(filter(None, response_parts)).strip() or None
-
-#             if not prompt_args.get("use_model_chat_template"):
-#                 combined = [v for v in prompt_parts.values() if v]
-#                 prompt = prompt_args.get("sep", "\n\n").join(combined)
-#             else:
-#                 # Use chat template if supported
-#                 if has_system_role_support(tokenizer):
-#                     system_content = "\n\n".join(filter(None, [
-#                         prompt_parts.get("intro"),
-#                         prompt_parts.get("instruction"),
-#                         prompt_parts.get("response_format_guide"),
-#                         prompt_parts.get("examples")
-#                     ]))
-#                     user_content = "\n\n".join(filter(None, [
-#                         prompt_parts.get("context"),
-#                         prompt_parts.get("input"),
-#                         prompt_args.get("pre_response_text", "")
-#                     ]))
-#                     messages = [{"role": "system", "content": system_content},
-#                                 {"role": "user", "content": user_content}]
-#                     if exp_args.phase == "train":
-#                         messages.append({"role": "assistant", "content": prompt_parts.get("response") or ""})
-#                         prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
-#                     else:
-#                         prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-#                         prompt += prompt_parts.get("response") or ""
-#                 else:
-#                     # Ensure context is included with input
-#                     user_message_content = "\n\n".join(filter(None, [
-#                         prompt_parts.get("intro"),
-#                         prompt_parts.get("instruction"),
-#                         prompt_parts.get("response_format_guide"),
-#                         prompt_parts.get("examples"),
-#                         prompt_parts.get("context"),
-#                         prompt_parts.get("input"),
-#                         prompt_args.get("pre_response_text", "")
-#                     ]))
-
-#                     messages = [{"role": "user", "content": user_message_content}]
-                    
-#                     if exp_args.phase == "train":
-#                         messages.append({"role": "assistant", "content": prompt_parts.get("response") or ""})
-#                         prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
-#                     else:
-#                         prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-
-#         if exp_args.phase == "train":
-#             prompt += prompt_args["end_key"]
-
-#             sample["text"] = prompt
-#             return sample
-        
-#         else:
-#             return prompt
-    
-#     return generate_prompt
-
-
 def do_tokenize_wrapper(tokenizer):
     def do_tokenize(sample, tokenizer_args):
         """
@@ -390,7 +263,7 @@ def do_tokenize_wrapper(tokenizer):
     
     return do_tokenize
 
-# @capture_output
+
 def show_dataset_examples(dataset_dict):
     """
     Prints the length, columns, shape of columns, and an example from each split of a DatasetDict (train, val, test).
@@ -496,7 +369,7 @@ def prepare_data(exp_args, data_args, tokenizer_args, prompt_args, model_args):
 def parse_args():
     import argparse
     parser = argparse.ArgumentParser(description="Load generation config.")
-    parser.add_argument("--config_path", type=str, required=True, help="Path to the YAML config file for generating.")
+    parser.add_argument("--config-path", type=str, required=True, help="Path to the YAML config file for generating.")
 
     args, override_args = parser.parse_known_args()
     return args, override_args
