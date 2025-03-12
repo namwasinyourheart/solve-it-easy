@@ -1,4 +1,5 @@
 # Solve It Easy: Fine-tuning LLMs (Llama, Qwen, ...) to Solve Vietnamese Math Problems.
+<div align="center"> <img src="https://scottlattablog.wordpress.com/wp-content/uploads/2018/02/word_problemsemoji.gif?text=Solve+It+Easy+Project" alt="Solve It Easy Project Image" width="60%" /> </div>
 
 ## 📖 Overview
 This project focuses on fine-tuning Large Language Models (LLMs) such as **LLaMA**, **Qwen** to improve their ability to solve Vietnamese math problems. The goal is to enhance model performance in understanding problem statements, generating step-by-step solutions, and improving accuracy in mathematical reasoning.
@@ -13,7 +14,7 @@ This project focuses on fine-tuning Large Language Models (LLMs) such as **LLaMA
 - Training Techniques: LoRA, QLoRA, PEFT
 - Evaluation Metrics: Accuracy
 
-## 📈Results
+## 📈 Results
 ### Baselines
 
 | Model                        | GSM8K-Vi (%) | GSM8K-En (%) |
