@@ -1,7 +1,6 @@
 # Solve It Easy: Fine-tuning LLMs (Llama, Qwen, ...) to Solve Vietnamese Math Problems.
 <div align="center"> <img src="https://scottlattablog.wordpress.com/wp-content/uploads/2018/02/word_problemsemoji.gif?text=Solve+It+Easy+Project" alt="Solve It Easy Project Image" width="60%" /> </div>
 
-
 ## 📖 Overview
 This project focuses on fine-tuning Large Language Models (LLMs) such as **LLaMA**, **Qwen** to improve their ability to solve Vietnamese math problems. The goal is to enhance model performance in understanding problem statements, generating step-by-step solutions, and improving accuracy in mathematical reasoning.
 
@@ -16,16 +15,8 @@ This project focuses on fine-tuning Large Language Models (LLMs) such as **LLaMA
 - CUDA-enabled GPU (Optional but recommended)
 - Libraries: PyTorch, Hugging Face Transformers, and other dependencies listed in `requirements.txt`.
 
-## ⚙️ Installation
-1. Clone this repository:
-```bash
-git clone https://github.com/namwasinyourheart/solve-it-easy.git
-cd solve-it-easy
-```
-2. Install the required dependencies:
-```bash
-pip install -r requirements.txt
-```
+## 📈 Results
+### Baselines
 
 ## 🏗 Data Preparation
 This project uses a Vietnamese-translated version of the **GSM8K** (Grade School Math World Problem 8.5K) dataset, which consists of 8,000 math word problems. These problems range from basic arithmetic to more complex logical reasoning and algebraic problems. The dataset is designed to test the ability of models to understand and solve math problems in Vietnamese.
