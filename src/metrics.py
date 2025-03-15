@@ -68,8 +68,55 @@ def calc_nltk_bleu(predictions, references):
 
 
 
-def compute_metrics_wrapper(tokenizer, eval_metrics):
-    def compute_metrics(predictions):
+def compute_metrics_wrapper(tokenizer, eval_metrics, model_type):
+
+    def compute_metrics_seq2seq(eval_preds):
+        results = {}
+        if not eval_metrics:
+            return results
+
+        if not len(eval_metrics):
+            return results
+        
+        preds, labels = eval_preds
+        if isinstance(preds, tuple):
+            preds = preds[0]
+        preds = np.argmax(preds, axis=-1) 
+        decoded_preds = tokenizer.batch_decode(preds, skip_special_tokens=True)
+        
+
+        labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
+        decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
+
+        predictions = decoded_preds
+        labels = decoded_labels
+
+
+        if 'bleu' in eval_metrics:
+            # Calculate BLEU score using evaluate
+            bleu_score = calc_bleu(predictions, labels)
+            results.update(bleu_score)
+
+        if 'nltk_bleu' in eval_metrics:
+            # Calculate BLEU scores using NLTK
+            nltk_bleu_score = calc_nltk_bleu(predictions, labels)
+            results.update(nltk_bleu_score)
+
+        if 'rouge' in eval_metrics:
+            # Calculate ROUGE score
+            rouge_score = calc_rouge(predictions, labels)
+            results.update(rouge_score)
+
+        if 'accuracy' in eval_metrics:
+            # Calculate accuracy
+            predictions = [extract_prediction(prediction, return_error='-1') for prediction in predictions]
+            labels = [extract_prediction(label, return_error='-123') for label in labels]
+            accuracy_score = calc_accuracy(predictions, labels)
+            results.update(accuracy_score)  
+    
+        return results
+
+    def compute_metrics_causal(predictions):
         results = {}
         if not eval_metrics:
             return results
@@ -110,4 +157,9 @@ def compute_metrics_wrapper(tokenizer, eval_metrics):
             results.update(accuracy_score)  
     
         return results
-    return compute_metrics
+    
+    if model_type == "SEQ_2_SEQ_LM":
+        return compute_metrics_seq2seq
+
+    if model_type == "CAUSAL_LM":
+        return compute_metrics_causal
