@@ -60,9 +60,7 @@ def load_cfg(config_path, override_args=None):
     # assert cfg.exp_manager.exp_name == os.path.basename(config_path).replace('.yaml', ''), \
     f"Config file name '{os.path.basename(config_path)}' does not match experiment name '{cfg.exp_manager.exp_name}' in the config."
 
-    if cfg.exp_manager.print_cfg:
-        hprint("2: Showing configuration...")
-        fprint(OmegaConf.to_yaml(cfg))
+    cfg.train.lora.task_type = cfg.train.progress_callback.model_type = cfg.model.model_type
     
     exp_args = cfg.exp_manager
     data_args = cfg.data
@@ -125,7 +123,7 @@ def format_examples(user_input: dict) -> str:
 
 def generate_prompt_wrapper(tokenizer):
 
-    def generate_prompt(sample, data_args, prompt_args, exp_args) -> str:
+    def generate_prompt(sample, data_args, prompt_args, exp_args, model_args) -> str:
         """
         Generates a structured prompt based on the provided dictionary.
         Sections are included only if their corresponding key/text is present and allowed by flags.
@@ -149,8 +147,8 @@ def generate_prompt_wrapper(tokenizer):
 
         if use_only_input_text:
             prompt = sample[input_col]
-            if exp_args.phase in ["train", "eval"]:
-                prompt += prompt_args.get("sep", "\n\n") + sample[output_col]
+            if exp_args.phase == "train" and model_args.model_type != 'SEQ_2_SEQ_LM':
+                prompt += prompt_args.get("sep", "\n\n") + sample.get(output_col, "")
         else:
             prompt_parts = {}
 
@@ -187,7 +185,7 @@ def generate_prompt_wrapper(tokenizer):
             response_parts = []
             if prompt_args.get("response_key"):
                 response_parts.append(prompt_args.get("response_key"))
-            if exp_args.phase == "train":
+            if exp_args.phase == "train" and model_args.model_type != 'SEQ_2_SEQ_LM':
                 response_parts.append(sample.get(output_col, ""))
             prompt_parts["response"] = "\n".join(filter(None, response_parts)).strip() or None
 
@@ -210,7 +208,7 @@ def generate_prompt_wrapper(tokenizer):
                     ]))
                     messages = [{"role": "system", "content": system_content},
                                 {"role": "user", "content": user_content}]
-                    if exp_args.phase == "train":
+                    if exp_args.phase == "train" and model_args.model_type != 'SEQ_2_SEQ_LM':
                         messages.append({"role": "assistant", "content": prompt_parts.get("response") or ""})
                         prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
                     else:
@@ -230,16 +228,27 @@ def generate_prompt_wrapper(tokenizer):
 
                     messages = [{"role": "user", "content": user_message_content}]
                     
-                    if exp_args.phase == "train":
+                    if exp_args.phase == "train" and model_args.model_type != 'SEQ_2_SEQ_LM':
                         messages.append({"role": "assistant", "content": prompt_parts.get("response") or ""})
                         prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
                     else:
                         prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
-        if exp_args.phase == "train":
+        if exp_args.phase == "train" and model_args.model_type != 'SEQ_2_SEQ_LM':
             prompt += prompt_args["end_key"]
 
-        sample["text"] = prompt
+        if model_args.model_type == "CAUSAL_LM":
+            sample["text"] = prompt
+
+        if model_args.model_type == "SEQ_2_SEQ_LM":
+
+            label = sample.get(output_col, "")
+
+            sample['inputs'] = prompt #sample.get(input_col, "")
+            sample['labels'] = label
+
+            # print("labels:", label)
+        
         return sample
     
     
@@ -247,19 +256,39 @@ def generate_prompt_wrapper(tokenizer):
 
 
 def do_tokenize_wrapper(tokenizer):
-    def do_tokenize(sample, tokenizer_args):
+    def do_tokenize(sample, tokenizer_args, model_args):
         """
         Tokenizes the text in the example and updates the example dictionary with input_ids and attention_mask.
         """
-        text = sample.get("text", None)  # Get text safely
+        if model_args.model_type == "CAUSAL_LM":
+            text = sample.get("text", None)  # Get text safely
 
-        if not isinstance(text, str):  
-            raise ValueError(f"Expected `text` to be a string, but got {type(text)}: {text}")
+            if not isinstance(text, str):  
+                raise ValueError(f"Expected `text` to be a string, but got {type(text)}: {text}")
 
-        tokenized_text = tokenizer(text, **tokenizer_args)  # Pass tokenizer_args correctly
-        sample["input_ids"] = tokenized_text["input_ids"]
-        sample["attention_mask"] = tokenized_text["attention_mask"]
-        return sample
+            tokenized_text = tokenizer(text, **tokenizer_args)  # Pass tokenizer_args correctly
+            sample["input_ids"] = tokenized_text["input_ids"]
+            sample["attention_mask"] = tokenized_text["attention_mask"]
+            return sample
+        
+        if model_args.model_type == "SEQ_2_SEQ_LM":
+            inputs = tokenizer(sample['inputs'], **tokenizer_args)
+            labels = tokenizer(sample['labels'], **tokenizer_args)
+
+            # If we are padding here, replace all tokenizer.pad_token_id in the labels by -100 when we want to ignore
+            # padding in the loss.
+            if tokenizer_args.padding == "max_length":
+                # inputs["input_ids"] = [
+                #     [(i if i != tokenizer.pad_token_id else -100) for i in input] for input in inputs["input_ids"]
+                # ]
+
+                labels["input_ids"] = [
+                    [(l if l != tokenizer.pad_token_id else -100) for l in label] for label in labels["input_ids"]
+                ]
+            sample = inputs
+            sample["labels"] = labels["input_ids"]
+
+            return sample
     
     return do_tokenize
 
@@ -342,21 +371,29 @@ def prepare_data(exp_args, data_args, tokenizer_args, prompt_args, model_args):
     # Generate prompts
     hprint("2: Generating prompts...")
     generate_prompt = generate_prompt_wrapper(tokenizer)
-    _generate_prompt = partial(generate_prompt, data_args=data_args, prompt_args=prompt_args, exp_args=exp_args)
+    _generate_prompt = partial(generate_prompt, data_args=data_args, prompt_args=prompt_args, exp_args=exp_args, model_args=model_args)
     dataset = dataset.map(_generate_prompt, remove_columns=columns_to_remove)
+
+    # if model_args.model_type == 'CAUSAL_LM':
+    #     dataset = dataset.map(_generate_prompt, remove_columns=columns_to_remove)
+
+    # if model_args.model_type == 'SEQ_2_SEQ_LM':
+    #     dataset = dataset.map(_generate_prompt, remove_columns=columns_to_remove, batched=True)
+
 
     if data_args.do_tokenize:
         # Tokenize the data
         hprint("2: Tokenizing the data...")
         do_tokenize = do_tokenize_wrapper(tokenizer)
-        _do_tokenize = partial(do_tokenize, tokenizer_args=tokenizer_args.tokenizer_args)
-        dataset = dataset.map(_do_tokenize)
+        _do_tokenize = partial(do_tokenize, tokenizer_args=tokenizer_args.tokenizer_args, model_args=model_args)
+        dataset = dataset.map(_do_tokenize, batched=True if model_args.model_type == 'SEQ_2_SEQ_LM' else False)
 
     if data_args.save_prepared:
+        prepared_data_path = os.path.join(exp_args.exps_dir, exp_args.exp_name, exp_args.exp_variant, 'data', data_args.prepared_data_filename)
         # Save the prepared data
         hprint("2: Saving prepared data...")
-        joblib.dump(dataset, data_args.prepared_data_path)
-        pprint(f"Prepared data saved to: {data_args.prepared_data_path}")
+        joblib.dump(dataset, prepared_data_path)
+        pprint(f"Prepared data saved to: {prepared_data_path}")
 
     if data_args.do_show:
         hprint("2: Showing dataset examples...")
@@ -374,10 +411,7 @@ def parse_args():
     args, override_args = parser.parse_known_args()
     return args, override_args
 
-
 def main():
-    # # Setup logging
-    # logger = setup_logger()
 
     # Setup environment
     hprint("1: Setting up environment...")
@@ -390,14 +424,24 @@ def main():
     hprint("1: Loading configuration...")
     cfg, exp_args, data_args, tokenizer_args, prompt_args, model_args, train_args, eval_args, gen_args, device_args = load_cfg(config_path=args.config_path, override_args=override_args)
     
+    if cfg.exp_manager.print_cfg:
+        hprint("2: Showing configuration...")
+        fprint(OmegaConf.to_yaml(cfg))
+    
     # Create experiment directories
     exp_name = cfg.exp_manager.exp_name
     exps_dir = cfg.exp_manager.exps_dir
-    exp_dir, exp_data_dir, exp_checkpoints_dir, exp_results_dir = create_exp_dir(exp_name, exps_dir)
+    exp_variant_dir = cfg.exp_manager.exp_variant
+
+    (exp_dir, exp_variant_dir, exp_variant_data_dir, exp_variant_checkpoints_dir, exp_variant_results_dir) = create_exp_dir(exp_name, exp_variant_dir, exps_dir)
+    # import shutil
+    # shutil.copy(args.config_path, exp_dir)
 
     # Save configuration if have any changes from the overrides
-    config_path = os.path.join(exp_dir, exp_name + '.yaml')
+    config_path = os.path.join(exp_variant_dir, exp_name + '.yaml')
     save_cfg(cfg, config_path)
+    pprint(f"2: Configuration saved to {config_path}")
+
 
     # Set seed
     set_seed(exp_args.seed)
@@ -405,6 +449,7 @@ def main():
 
     if data_args.is_prepared:
         hprint("1: Data is prepared, loading...")
+        prepared_data_path = os.path.join(exp_args.exps_dir, exp_args.exp_name, exp_args.exp_variant, 'data', data_args.prepared_data_filename)
         prepare_data_path = data_args.prepared_data_path
         dataset_dict = joblib.load(prepare_data_path)
     else:
