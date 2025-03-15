@@ -27,8 +27,6 @@ from transformers import (
 from torch.utils.data import DataLoader
 
 from src.utils.exp_utils import setup_environment, create_exp_dir
-from src.utils.log_utils import setup_logger
-
 from src.utils.hieralog import hprint, pprint, fprint
 
 from src.utils.model_utils import (
@@ -75,6 +73,8 @@ def load_cfg(config_path, override_args=None):
     # assert cfg.exp_manager.phase_name + '__' + 
     # assert cfg.exp_manager.exp_name == os.path.basename(config_path).replace('.yaml', ''), \
     f"Config file name '{os.path.basename(config_path)}' does not match experiment name '{cfg.exp_manager.exp_name}' in the config."
+
+    cfg.train.lora.task_type = cfg.train.progress_callback.model_type = cfg.model.model_type
     
     exp_args = cfg.exp_manager
     data_args = cfg.data
@@ -160,7 +160,7 @@ def extract_numeric_answer(response):
         return None
 
 
-def eval(model, tokenizer, test_loader, eval_args, exp_args, gen_args, exp_results_dir):
+def eval(model, tokenizer, test_loader, eval_args, exp_args, gen_args, exp_variant_results_dir):
     """
     Evaluates a model on a test dataset, generates predictions, and saves results in multiple formats.
 
@@ -171,12 +171,12 @@ def eval(model, tokenizer, test_loader, eval_args, exp_args, gen_args, exp_resul
         eval_args: Arguments related to evaluation (e.g., break_step, do_extract_prediction).
         exp_args: Experiment arguments (e.g., exp_name).
         gen_args: Generation arguments (e.g., max_new_tokens, temperature).
-        exp_results_dir: Directory to save results.
+        exp_variant_results_dir: Directory to save results.
         result_file_types: List of file types to save results (e.g., ['txt', 'json', 'csv']).
     """
 
     # Ensure results directory exists
-    os.makedirs(exp_results_dir, exist_ok=True)
+    os.makedirs(exp_variant_results_dir, exist_ok=True)
 
     accuracy_metric = evaluate.load("accuracy")
 
@@ -226,14 +226,15 @@ def eval(model, tokenizer, test_loader, eval_args, exp_args, gen_args, exp_resul
     print(f"Accuracy: {results}")
 
     # Save predictions
-    save_predictions(predictions_list, exp_results_dir, eval_args.prediction_filename)
+    save_predictions(predictions_list, exp_variant_results_dir, f'{exp_args.prefix_fn}_{eval_args.prediction_filename}')
 
     # Save accuracy metrics
     metrics = {
         "exp_name": exp_args.exp_name,
+        "exp_variant": exp_args.exp_variant,
         "accuracy": results
     }
-    save_metrics(metrics, exp_results_dir, eval_args.metric_filename)
+    save_metrics(metrics, exp_variant_results_dir, f'{exp_args.prefix_fn}_{eval_args.metric_filename}')
 
 
 def parse_args():
@@ -249,8 +250,7 @@ def main():
     # Setup environment
     hprint("1: Setting up environment...")
     setup_environment()
-
-
+    
     # Parse arguments
     args, override_args = parse_args()
 
@@ -265,14 +265,15 @@ def main():
     # Create experiment directories
     exp_name = cfg.exp_manager.exp_name
     exps_dir = cfg.exp_manager.exps_dir
+    exp_variant_dir = cfg.exp_manager.exp_variant
 
-    (exp_dir, exp_data_dir, exp_checkpoints_dir, exp_results_dir) = create_exp_dir(exp_name, exps_dir)
-
+    (exp_dir, exp_variant_dir, exp_variant_data_dir, exp_variant_checkpoints_dir, exp_variant_results_dir) = create_exp_dir(exp_name, exp_variant_dir, exps_dir)
     # import shutil
     # shutil.copy(args.config_path, exp_dir)
-    
-    #Save configuration if have any changes from the overrides
-    config_path = os.path.join(exp_dir, 'eval_' + exp_name + '.yaml')
+
+    # Save configuration if have any changes from the overrides
+    prefix_fn = cfg.exp_manager.prefix_fn
+    config_path = os.path.join(exp_variant_dir, 'eval_' + prefix_fn + '_' + exp_name + '.yaml')
     save_cfg(cfg, config_path)
     pprint(f"2: Configuration saved to {config_path}")
 
@@ -315,7 +316,7 @@ def main():
     
     hprint("1: Evaluating model...")
     # Evaluate model
-    eval(model, tokenizer, test_loader, eval_args, exp_args, gen_args, exp_results_dir)
+    eval(model, tokenizer, test_loader, eval_args, exp_args, gen_args, exp_variant_results_dir)
 
 
 
