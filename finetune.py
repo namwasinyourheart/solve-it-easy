@@ -24,7 +24,7 @@ from trl import (
     SFTTrainer
 )
 
-from transformers import DataCollatorForLanguageModeling, set_seed #Seq2SeqTrainer
+from transformers import DataCollatorForLanguageModeling, set_seed, Seq2SeqTrainer, Trainer, DataCollatorForSeq2Seq
 
 from src.utils.hieralog import hprint, pprint, fprint
 from prepare_data import prepare_data
@@ -34,7 +34,7 @@ from src.metrics import compute_metrics_wrapper
 
 from src.utils.data_utils import get_data_subset
 
-from src.callbacks import ProgressCallback, decode_predictions
+from src.callbacks import ProgressCallback, decode_predictions_wrapper
 
 
 import warnings
@@ -72,6 +72,8 @@ def load_cfg(config_path, override_args=None):
     # assert cfg.exp_manager.phase_name + '__' + 
     # assert cfg.exp_manager.exp_name == os.path.basename(config_path).replace('.yaml', ''), \
     f"Config file name '{os.path.basename(config_path)}' does not match experiment name '{cfg.exp_manager.exp_name}' in the config."
+    
+    cfg.train.lora.task_type = cfg.train.progress_callback.model_type = cfg.model.model_type
     
     exp_args = cfg.exp_manager
     data_args = cfg.data
@@ -124,7 +126,7 @@ def finetune(
     train_ds, val_ds, test_ds,
     exp_args, data_args, tokenizer_args, prompt_args, 
     model_args, train_args, eval_args, gen_args, device_args, 
-    exp_dir, exp_data_dir, exp_checkpoints_dir, exp_results_dir
+    exp_variant_dir, exp_variant_data_dir, exp_variant_checkpoints_dir, exp_variant_results_dir
 ):
     """
     Trains and evaluates the provided model using the specified datasets and configurations.
@@ -149,21 +151,22 @@ def finetune(
         eval_args: Evaluation-related configurations and metrics.
         gen_args: Arguments for text generation (if applicable).
         device_args: Hardware-related configurations (e.g., GPU, TPU settings).
-        exp_dir: Root directory for experiment outputs.
-        exp_data_dir: Directory for storing dataset files.
-        exp_checkpoints_dir: Path to save model checkpoints.
-        exp_results_dir: Directory for saving evaluation results and predictions.
+        exp_variant_dir: Root directory for experiment outputs.
+        exp_variant_data_dir: Directory for storing dataset files.
+        exp_variant_checkpoints_dir: Path to save model checkpoints.
+        exp_variant_results_dir: Directory for saving evaluation results and predictions.
     """
 
-    # Prepare model for training
-    model.gradient_checkpointing_enable()
-    model = prepare_model_for_kbit_training(model)
-
-    peft_config = get_peft_config(train_args)
-    if exp_args.print_peft_config:
-        pprint(peft_config)
+    
 
     if train_args.use_peft:
+        # Prepare model for training
+        model.gradient_checkpointing_enable()
+        model = prepare_model_for_kbit_training(model)
+
+        peft_config = get_peft_config(train_args)
+        if exp_args.print_peft_config:
+            pprint(peft_config)
         model = get_peft_model(model, peft_config)
 
     # Print trainable parameters
@@ -179,12 +182,7 @@ def finetune(
         from src.utils.model_utils import print_parameter_datatypes
         print_parameter_datatypes(model)
 
-    # Setup Data Collator
-    data_collator = DataCollatorForLanguageModeling(
-        tokenizer=tokenizer, 
-        mlm=False, 
-        return_tensors="pt"
-    )
+    
 
     # Initialize W&B
     wandb.init(
@@ -194,7 +192,7 @@ def finetune(
     # Training arguments
     training_args = instantiate(
         train_args.train_args, 
-        output_dir=exp_checkpoints_dir, 
+        output_dir=exp_variant_checkpoints_dir, 
         report_to="wandb",
         run_name=wandb.run.name
     )
@@ -205,17 +203,46 @@ def finetune(
             f"Process Rank: {training_args.local_rank}, Device: {training_args.device}, N_GPU: {training_args.n_gpu}, "
             f"Distributed Training: {bool(training_args.local_rank != -1)}"
         )
+    if model_args.model_type == "CAUSAL_LM":
 
-    # Initialize Trainer
-    trainer = SFTTrainer(
-        model=model,
-        args=training_args,
-        train_dataset=train_ds,
-        eval_dataset=val_ds,
-        compute_metrics=compute_metrics_wrapper(tokenizer, train_args.eval_metrics),
-        tokenizer=tokenizer,
-        data_collator=data_collator,
-    )
+        # Setup Data Collator
+        data_collator = DataCollatorForLanguageModeling(
+            tokenizer=tokenizer, 
+            mlm=False, 
+            return_tensors="pt"
+        )
+
+        # Initialize Trainer
+        trainer = SFTTrainer(
+            model=model,
+            args=training_args,
+            train_dataset=train_ds,
+            eval_dataset=val_ds,
+            compute_metrics=compute_metrics_wrapper(tokenizer, train_args.eval_metrics, model_args.model_type),
+            tokenizer=tokenizer,
+            data_collator=data_collator,
+        )
+    if model_args.model_type == "SEQ_2_SEQ_LM":
+        
+        # Setup Data Collator
+        label_pad_token_id = -100
+        data_collator = DataCollatorForSeq2Seq(
+            tokenizer,
+            model=model,
+            label_pad_token_id=label_pad_token_id,
+            # pad_to_multiple_of=8
+        )
+            
+        # Initialize Trainer
+        trainer = Trainer(
+            model=model,
+            args=training_args,
+            train_dataset=train_ds,
+            eval_dataset=val_ds,
+            compute_metrics=compute_metrics_wrapper(tokenizer, train_args.eval_metrics, model_args.model_type),
+            tokenizer=tokenizer,
+            data_collator=data_collator,
+        )
 
     model.config.use_cache = False  # re-enable for inference
 
@@ -227,7 +254,12 @@ def finetune(
         **train_args.progress_callback
     )
 
-    all_metrics = {"run_name": wandb.run.name}
+    all_metrics = {
+        "exp_name": exp_args.exp_name,
+        "exp_variant": exp_args.exp_variant,
+        "run_name": wandb.run.name
+    }
+        
 
     # Training
     if training_args.do_train:
@@ -235,7 +267,7 @@ def finetune(
         
         trainer.add_callback(progress_callback)
 
-        if training_args.resume_from_checkpoint:
+        if train_args.do_resume_from_checkpoint and training_args.resume_from_checkpoint:
             checkpoint = training_args.resume_from_checkpoint
             train_result = trainer.train(resume_from_checkpoint=checkpoint)
         else:
@@ -248,10 +280,20 @@ def finetune(
 
         all_metrics.update(metrics)
 
-        # Save trained adapter
-        hprint("1: Saving model...")
-        trainer.model.save_pretrained(os.path.join(exp_results_dir, 'adapter'))
-        pprint(f"2: Model saved to {os.path.join(exp_results_dir, 'adapter')}")
+        # Save trained adapter/models
+        if train_args.use_peft:
+            hprint("1: Saving adapter...")
+            trainer.model.save_pretrained(os.path.join(exp_variant_results_dir, 'adapter'))
+            pprint(f"2: Model saved to {os.path.join(exp_variant_results_dir, 'adapter')}")
+
+        else:
+            hprint("1: Saving finetuned model and tokenizer...")
+            # Saving model
+            trainer.model.save_pretrained(os.path.join(exp_variant_results_dir, 'finetuned_model'))
+            
+            # Save tokenizer
+            tokenizer.save_pretrained(os.path.join(exp_variant_results_dir, 'finetuned_model'))
+            pprint(f"2: Finetuned model and tokenizer saved to {os.path.join(exp_variant_results_dir, 'finetuned_model')}")
 
     # Evaluation
     if training_args.do_eval:
@@ -263,6 +305,11 @@ def finetune(
 
     # Prediction
     if training_args.do_predict:
+        # from src.callbacks import decode_predictions_wrapper
+        decode_predictions = decode_predictions_wrapper(model_args.model_type)
+
+        # print("decode_predictions:", decode_predictions)
+        
         hprint("1: Predicting...")
         predictions = trainer.predict(test_dataset=test_ds, metric_key_prefix='test')
         metrics = predictions.metrics
@@ -270,28 +317,35 @@ def finetune(
         
         predictions = decode_predictions(tokenizer, predictions)
         predictions_df = pd.DataFrame(predictions)
-        predictions_df.to_csv(os.path.join(exp_results_dir, 'test_predictions.csv'), index=False)
+        predictions_df.to_csv(os.path.join(exp_variant_results_dir, f'{exp_args.prefix_fn}_test_predictions.csv'), index=False)
 
     # Save metrics
+    hprint("1: Saving metrics...")
     if training_args.do_train or training_args.do_eval or training_args.do_predict:
-        with open(os.path.join(exp_results_dir, train_args.train_metric_filename), "w") as fout:
+        all_metrics_fp = os.path.join(exp_variant_results_dir, f'{exp_args.prefix_fn}_{train_args.train_metric_filename}')
+        with open(all_metrics_fp, "w") as fout:
             fout.write(json.dumps(all_metrics))
 
     # Merge model if required
-    if training_args.do_train and train_args.merge_after_train:
-        hprint("1: Merging model...")
-        adapter_path = os.path.join(exp_results_dir, 'adapter')
-        base_model, tokenizer = get_model_tokenizer(model_args, tokenizer_args, prompt_args, device_args)
+    if train_args.use_peft:
+        if training_args.do_train and train_args.merge_after_train:
+            hprint("1: Merging model...")
+            adapter_path = os.path.join(exp_variant_results_dir, 'adapter')
+            base_model, tokenizer = get_model_tokenizer(model_args, tokenizer_args, prompt_args, device_args)
 
-        from peft import PeftModel
-        finetuned_model = PeftModel.from_pretrained(base_model, adapter_path)
-        finetuned_model = finetuned_model.merge_and_unload()
-        
-        # Save merged model
-        finetuned_model.save_pretrained(os.path.join(exp_results_dir, 'merged_model'))
+            from peft import PeftModel
+            finetuned_model = PeftModel.from_pretrained(base_model, adapter_path)
+            finetuned_model = finetuned_model.merge_and_unload()
+            
+            hprint("1: Saving merged model and tokenizer...")
+            # Save merged model
+            finetuned_model.save_pretrained(os.path.join(exp_variant_results_dir, 'merged_model'))
 
-        # Save tokenizer
-        tokenizer.save_pretrained(os.path.join(exp_results_dir, 'merged_model'))
+            # Save tokenizer
+            tokenizer.save_pretrained(os.path.join(exp_variant_results_dir, 'merged_model'))
+            pprint(f"2: Merged model and tokenizer saved to {os.path.join(exp_variant_results_dir, 'merged_model')}")
+
+
 
     # Log experiment artifact
     if exp_args.wandb.log_artifact:
@@ -301,7 +355,7 @@ def finetune(
             type="exp", 
         )
 
-        artifact.add_dir(exp_dir)
+        artifact.add_dir(exp_variant_dir)
         wandb.log_artifact(artifact)
 
     wandb.finish()
@@ -328,13 +382,15 @@ def main():
     # Create experiment directories
     exp_name = cfg.exp_manager.exp_name
     exps_dir = cfg.exp_manager.exps_dir
+    exp_variant_dir = cfg.exp_manager.exp_variant
 
-    (exp_dir, exp_data_dir, exp_checkpoints_dir, exp_results_dir) = create_exp_dir(exp_name, exps_dir)
+    (exp_dir, exp_variant_dir, exp_variant_data_dir, exp_variant_checkpoints_dir, exp_variant_results_dir) = create_exp_dir(exp_name, exp_variant_dir, exps_dir)
     # import shutil
     # shutil.copy(args.config_path, exp_dir)
 
     # Save configuration if have any changes from the overrides
-    config_path = os.path.join(exp_dir, 'sft_' + exp_name + '.yaml')
+    prefix_fn = cfg.exp_manager.prefix_fn
+    config_path = os.path.join(exp_variant_dir, 'sft_' + prefix_fn + '_' + exp_name + '.yaml')
     save_cfg(cfg, config_path)
     pprint(f"2: Configuration saved to {config_path}")
 
@@ -377,7 +433,7 @@ def main():
         train_ds, val_ds, test_ds,
         exp_args, data_args, tokenizer_args, prompt_args, 
         model_args, train_args, eval_args, gen_args, device_args, 
-        exp_dir, exp_data_dir, exp_checkpoints_dir, exp_results_dir
+        exp_variant_dir, exp_variant_data_dir, exp_variant_checkpoints_dir, exp_variant_results_dir
     )
         
 
