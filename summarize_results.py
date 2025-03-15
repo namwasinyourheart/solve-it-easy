@@ -4,7 +4,7 @@ import pandas as pd
 
 def summarize_results(exps_dir="exps/", output_csv="results_summary.csv"):
     """
-    Reads results from the '{exps_dir}/{exp_name}/results/test_metrics.txt' directories, 
+    Reads results from '{exps_dir}/{exp_name}/results/test_metrics_*.txt' files, 
     extracts accuracy scores, saves them to a CSV file, and displays them in Markdown format.
 
     Args:
@@ -17,21 +17,30 @@ def summarize_results(exps_dir="exps/", output_csv="results_summary.csv"):
 
     # Iterate through experiment directories
     for exp_name in os.listdir(exps_dir):
-        results_file = os.path.join(exps_dir, exp_name, "results", "test_metrics.txt")
-        
-        if os.path.exists(results_file):
-            with open(results_file, "r", encoding="utf-8") as f:
-                content = f.read()
+        for exp_variant in os.listdir(os.path.join(exps_dir, exp_name)):
+            exp_results_dir = os.path.join(exps_dir, exp_name, exp_variant, "results")
+            
+            if os.path.isdir(exp_results_dir):  # Ensure it's a directory
+                # Find all test_metrics_*.txt files
+                for results_file in os.listdir(exp_results_dir):
+                    if results_file.startswith("test_metrics") and results_file.endswith(".txt"):
+                        results_file_path = os.path.join(exp_results_dir, results_file)
+                        
+                        if os.path.exists(results_file_path):
+                            with open(results_file_path, "r", encoding="utf-8") as f:
+                                content = f.read()
 
-                # Extract accuracy using regex
-                accuracy_match = re.search(r"Accuracy: \{'accuracy': ([\d\.]+)\}", content)
-                accuracy = float(accuracy_match.group(1)) if accuracy_match else None
+                                # Extract accuracy using regex
+                                accuracy_match = re.search(r"Accuracy: \{'accuracy': ([\d\.]+)\}", content)
+                                accuracy = float(accuracy_match.group(1)) if accuracy_match else None
 
-                # Store results
-                experiments.append({
-                    "Experiment": exp_name,
-                    "Accuracy": accuracy,
-                })
+                                # Store results
+                                experiments.append({
+                                    "Experiment Name": exp_name,
+                                    "Experiment Variant": exp_variant,
+                                    "Results File": results_file,
+                                    "Accuracy": accuracy,
+                                })
 
     # Convert to Pandas DataFrame
     df_results = pd.DataFrame(experiments)
@@ -48,4 +57,4 @@ def summarize_results(exps_dir="exps/", output_csv="results_summary.csv"):
     return df_results  # Return DataFrame for further analysis
 
 
-summarize_results(exps_dir="/exps/", output_csv="results_summary.csv")
+summarize_results(exps_dir="exps_modal", output_csv="results_summary.csv")
