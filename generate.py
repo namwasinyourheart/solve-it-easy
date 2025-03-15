@@ -89,15 +89,16 @@ def load_model_for_generate(model_args, device_args) -> PreTrainedModel:
     if model_args['torch_dtype']:
         torch_dtype = model_args['torch_dtype']
         
-    else: torch_dtype = 'float16'
+    else: 
+        torch_dtype = 'float16'
 
     # QLora Config
     quantization_config = get_quantization_config(model_args)
 
-    if model_args.model_type == 'causal_lm':
+    if model_args.model_type == 'CAUSAL_LM':
         model_class = AutoModelForCausalLM
 
-    elif model_args.model_type == 'seq_2_seq_lm':
+    elif model_args.model_type == 'SEQ_2_SEQ_LM':
         model_class = AutoModelForSeq2SeqLM
     
     else:

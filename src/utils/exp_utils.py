@@ -1,7 +1,6 @@
 import os
-from dotenv import load_dotenv
 
-def create_exp_dir(exp_name, exps_dir='exps', sub_dirs=['checkpoints', 'data', 'results']):
+def create_exp_dir(exp_name, exp_variant, exps_dir='exps', sub_dirs=['checkpoints', 'data', 'results']):
     """
     Create necessary directories for an experiment.
     
@@ -17,22 +16,24 @@ def create_exp_dir(exp_name, exps_dir='exps', sub_dirs=['checkpoints', 'data', '
     # exp_dir = os.path.join("exps", exp_name)
     exp_dir = os.path.join(exps_dir, exp_name)
     os.makedirs(exp_dir, exist_ok=True)
+
+    exp_variant_dir = os.path.join(exp_dir, exp_variant)
+    os.makedirs(exp_variant_dir, exist_ok=True)
     
-    sub_dirs_paths = {sub_dir: os.path.join(exp_dir, sub_dir) for sub_dir in sub_dirs}
+    sub_dirs_paths = {sub_dir: os.path.join(exp_variant_dir, sub_dir) for sub_dir in sub_dirs}
     for path in sub_dirs_paths.values():
         os.makedirs(path, exist_ok=True)
 
 
-    exp_data_dir = sub_dirs_paths['data']
-    exp_checkpoints_dir = sub_dirs_paths['checkpoints']
-    exp_results_dir = sub_dirs_paths['results']
+    exp_variant_data_dir = sub_dirs_paths['data']
+    exp_variant_checkpoints_dir = sub_dirs_paths['checkpoints']
+    exp_variant_results_dir = sub_dirs_paths['results']
     
-    return (exp_dir, exp_data_dir, exp_checkpoints_dir, exp_results_dir)
+    return (exp_dir, exp_variant_dir, exp_variant_data_dir, exp_variant_checkpoints_dir, exp_variant_results_dir)
 
 
 def setup_environment() -> None:
     from dotenv import load_dotenv
-    # print("SETTING UP ENVIRONMENT...")
     _ = load_dotenv()
 
     # # Disable Hugging Face cache

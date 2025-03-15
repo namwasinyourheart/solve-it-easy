@@ -6,6 +6,7 @@ import os
 def write_to_txt(file_path, predictions_list):
     """Writes prediction results to a TXT file."""
     with open(file_path, "w", encoding="utf-8") as f:
+
         for prediction in predictions_list:
             for key, value in prediction.items():
                 f.write(f"{key}: {value}\n")
@@ -68,10 +69,11 @@ def save_metrics(metrics, directory, filename):
 
     with open(file_path, "w", encoding="utf-8") as f:
         f.write(f"Experiment Name: {metrics.get('exp_name', 'N/A')}\n")
+        f.write(f"Experiment Variant: {metrics.get('exp_variant', 'N/A')}\n")
         f.write("-" * 48 + "\n\n")
         
         for key, value in metrics.items():
-            if key != "exp_name":  # Avoid duplicating experiment name
+            if key != "exp_name" and key != "exp_variant":  # Avoid duplicating experiment name
                 f.write(f"{key.capitalize()}: {value}\n")
         
         f.write("-" * 48 + "\n")
