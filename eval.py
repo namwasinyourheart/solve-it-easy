@@ -37,7 +37,7 @@ from src.utils.model_utils import (
 from prepare_data import prepare_data, show_dataset_examples
 
 
-from generate import get_model_class, load_model_for_generate
+from generate import load_model_tokenizer_for_generate, get_model_class, load_model_for_generate
 from src.utils.model_utils import load_tokenizer
 from src.utils.eval_utils import save_predictions, save_metrics
 
@@ -273,6 +273,9 @@ def main():
 
     # Save configuration if have any changes from the overrides
     prefix_fn = cfg.exp_manager.prefix_fn
+    if not prefix_fn:
+        prefix_fn = ''
+        
     config_path = os.path.join(exp_variant_dir, 'eval_' + prefix_fn + '_' + exp_name + '.yaml')
     save_cfg(cfg, config_path)
     pprint(f"2: Configuration saved to {config_path}")
@@ -304,11 +307,16 @@ def main():
     set_seed(exp_args.seed)
 
     hprint("1: Loading model and tokenizer...")
-    hprint("2: Loading model...")
-    model = load_model_for_generate(model_args, device_args)
 
-    hprint("2: Loading tokenizer...")
-    tokenizer = load_tokenizer(tokenizer_args, model_args, prompt_args)
+    model, tokenizer = load_model_tokenizer_for_generate(model_args, device_args)
+
+    # hprint("2: Loading model...")
+    # model = load_model_for_generate(model_args, device_args)
+
+    # hprint("2: Loading tokenizer...")
+    # tokenizer = load_tokenizer(tokenizer_args, model_args, prompt_args)
+
+    # model.resize_token_embeddings(len(tokenizer))
 
     
     model = model.to(accelerator.device)
