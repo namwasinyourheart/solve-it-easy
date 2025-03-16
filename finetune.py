@@ -390,6 +390,9 @@ def main():
 
     # Save configuration if have any changes from the overrides
     prefix_fn = cfg.exp_manager.prefix_fn
+    if not prefix_fn:
+        prefix_fn = ''
+        
     config_path = os.path.join(exp_variant_dir, 'sft_' + prefix_fn + '_' + exp_name + '.yaml')
     save_cfg(cfg, config_path)
     pprint(f"2: Configuration saved to {config_path}")
