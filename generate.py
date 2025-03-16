@@ -115,6 +115,14 @@ def load_model_for_generate(model_args, device_args) -> PreTrainedModel:
             low_cpu_mem_usage=model_args['low_cpu_mem_usage']  # low_cpu_mem_usage=True if not device_args['use_cpu'] else False
     )
 
+    # # Load adapter and merge
+    # if model_args.adapter_path:
+    #     from peft import PeftModel
+    #     merged_model = PeftModel.from_pretrained(model, model_args.adapter_path)
+    #     merged_model = merged_model.merge_and_unload()
+
+    # return merged_model
+
 
     # # print(model)
     # adapter_path = '/exps/llama-3.2-1b-instruct__gsm8k_vien/checkpoints/checkpoint-1124'
@@ -162,12 +170,31 @@ def load_model_for_generate_vllm(model_args, gen_args, device_args):
 def load_tokenizer_for_generate(
     model_args
 ) -> PreTrainedTokenizer:
-    
-    tokenizer = AutoTokenizer.from_pretrained(model_args['pretrained_model_name_or_path'])
+    if model_args['pretrained_tokenizer_name_or_path']:
+        tokenizer = AutoTokenizer.from_pretrained(model_args['pretrained_tokenizer_name_or_path'])
+    else:
+        tokenizer = AutoTokenizer.from_pretrained(model_args['pretrained_model_name_or_path'])
     tokenizer.padding_side = 'left'
     tokenizer.pad_token = tokenizer.eos_token
         
     return tokenizer
+
+
+def load_model_tokenizer_for_generate(model_args, device_args):
+    model = load_model_for_generate(model_args, device_args)
+    tokenizer = load_tokenizer_for_generate(model_args)
+
+    model.resize_token_embeddings(len(tokenizer))
+
+    # Load adapter and merge
+    if model_args.adapter_path:
+        from peft import PeftModel
+        model = PeftModel.from_pretrained(model, model_args.adapter_path)
+        model = model.merge_and_unload()
+
+        
+
+    return model, tokenizer
 
 
 # def prepare_prompt_for_generate(prompt_args):
@@ -318,9 +345,13 @@ def generate_response(model_args, tokenizer_args, prompt_args, gen_args, device_
     from accelerate import Accelerator
     accelerator = Accelerator(cpu=device_args.use_cpu)
     
-    model = load_model_for_generate(model_args, device_args)
+    # model = load_model_for_generate(model_args, device_args)
     
-    tokenizer = load_tokenizer_for_generate(model_args)
+    # tokenizer = load_tokenizer_for_generate(model_args)
+
+    # model.resize_token_embeddings(len(tokenizer))
+
+    model, tokenizer = load_model_tokenizer_for_generate(model_args, device_args)
 
     prompt = generate_prompt_for_inference(prompt_args)
 
