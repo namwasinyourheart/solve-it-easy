@@ -16,7 +16,11 @@ from transformers import (
 
 
 def load_tokenizer(tokenizer_args, model_args, prompt_args) -> PreTrainedTokenizer:
-    tokenizer = AutoTokenizer.from_pretrained(model_args.pretrained_model_name_or_path)
+    # tokenizer = AutoTokenizer.from_pretrained(model_args.pretrained_model_name_or_path)
+    if not model_args.pretrained_tokenizer_name_or_path:
+        tokenizer = AutoTokenizer.from_pretrained(model_args.pretrained_model_name_or_path)
+    else:
+        tokenizer = AutoTokenizer.from_pretrained(model_args.pretrained_tokenizer_name_or_path)
     
     if not tokenizer.pad_token:
         if tokenizer_args.new_pad_token:
@@ -87,6 +91,10 @@ def load_model(model_args, device_args) -> PreTrainedModel:
         
     else: 
         torch_dtype = 'float16'
+    
+    if torch_dtype == 'bfloat16':
+        torch_dtype = torch.bfloat16
+    
 
     # QLora Config
     quantization_config = get_quantization_config(model_args)
@@ -211,13 +219,13 @@ def get_peft_config(train_args) -> PeftConfig | None:
         return None
 
     peft_config = LoraConfig(
-        r=train_args.lora.r,
-        lora_alpha=train_args.lora.lora_alpha,
-        lora_dropout=train_args.lora.lora_dropout,
-        bias=train_args.lora.bias,
-        task_type=train_args.lora.task_type,
-        target_modules=list(train_args.lora.target_modules),
-        modules_to_save=train_args.lora.modules_to_save,
+        r = train_args.lora.r,
+        lora_alpha = train_args.lora.lora_alpha,
+        lora_dropout = train_args.lora.lora_dropout,
+        bias = train_args.lora.bias,
+        task_type = train_args.lora.task_type,
+        target_modules = list(train_args.lora.target_modules),
+        modules_to_save = list(train_args.lora.modules_to_save),
     )
 
     return peft_config

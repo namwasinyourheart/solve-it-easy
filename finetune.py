@@ -162,7 +162,8 @@ def finetune(
     if train_args.use_peft:
         # Prepare model for training
         model.gradient_checkpointing_enable()
-        model = prepare_model_for_kbit_training(model)
+        if model_args.load_in_4bit or model_args.load_in_8bit:
+            model = prepare_model_for_kbit_training(model)
 
         peft_config = get_peft_config(train_args)
         if exp_args.print_peft_config:
@@ -392,6 +393,7 @@ def main():
     prefix_fn = cfg.exp_manager.prefix_fn
     if not prefix_fn:
         prefix_fn = ''
+        # cfg.exp_manager.prefix_fn = ''
         
     config_path = os.path.join(exp_variant_dir, 'sft_' + prefix_fn + '_' + exp_name + '.yaml')
     save_cfg(cfg, config_path)
