@@ -15,9 +15,6 @@ This project focuses on fine-tuning Large Language Models (LLMs) such as **LLaMA
 - CUDA-enabled GPU (Optional but recommended)
 - Libraries: PyTorch, Hugging Face Transformers, and other dependencies listed in `requirements.txt`.
 
-## 📈 Results
-### Baselines
-
 ## 🏗 Data Preparation
 This project uses a Vietnamese-translated version of the **GSM8K** (Grade School Math World Problem 8.5K) dataset, which consists of 8,000 math word problems. These problems range from basic arithmetic to more complex logical reasoning and algebraic problems. The dataset is designed to test the ability of models to understand and solve math problems in Vietnamese.
 
@@ -245,6 +242,10 @@ Vì vậy tổng số lượng vải là 2+1=3 cuộn vải.
 Answer:
 3
 ```
+<!-->
+## 📈 Results
+### Baselines
+-->
 
 ## 🤝 Contributions
 Contributions are welcome! Please submit a pull request or open an issue.
